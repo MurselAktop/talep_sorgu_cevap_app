@@ -7,6 +7,12 @@
 .buildlog/
 .history
 
+# Flutter uygulamaları için pubspec.lock commit edilmeli (tekrarlanabilir build)
+!pubspec.lock
+
+# Environment variables (secrets)
+.env
+
 
 
 # Flutter repo-specific
