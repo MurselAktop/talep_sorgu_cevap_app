@@ -6,20 +6,29 @@ import 'supabase_service.dart';
 class AuthService {
   static SupabaseClient get _client => SupabaseService.client;
 
-  /// Vatandaş kaydı oluşturur. `fullName`, Supabase Auth'un kullanıcı
-  /// metadata'sına (`raw_user_meta_data`) yazılır; veritabanındaki
-  /// `handle_new_user` trigger'ı bunu okuyup `public.users` tablosuna
-  /// `role = 'vatandas'`, `department_id = null` ile otomatik ekler.
-  /// Bu yüzden burada ayrıca `public.users`'a manuel INSERT yapılmaz.
+  /// Vatandaş ya da personel/müdür/admin kaydı oluşturur. `fullName`,
+  /// Supabase Auth'un kullanıcı metadata'sına (`raw_user_meta_data`) yazılır;
+  /// veritabanındaki `handle_new_user` trigger'ı bunu okuyup `public.users`
+  /// tablosuna otomatik profil ekler. Bu yüzden burada ayrıca
+  /// `public.users`'a manuel INSERT yapılmaz.
+  ///
+  /// `inviteCode` verilirse, trigger bunu `personnel_invites` tablosunda
+  /// doğrulayıp kullanıcıyı kodun tanımladığı rol/birimle oluşturur (kod
+  /// geçersiz/kullanılmışsa kayıt reddedilir). Verilmezse eski davranış
+  /// (vatandaş kaydı) aynen çalışır.
   static Future<AuthResponse> signUp({
     required String email,
     required String password,
     required String fullName,
+    String? inviteCode,
   }) {
     return _client.auth.signUp(
       email: email,
       password: password,
-      data: {'full_name': fullName},
+      data: {
+        'full_name': fullName,
+        'invite_code': ?inviteCode,
+      },
     );
   }
 
