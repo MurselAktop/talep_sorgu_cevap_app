@@ -2,12 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/auth_service.dart';
+import '../services/supabase_service.dart';
 import 'home_screen.dart';
+import 'personnel_register_screen.dart';
 import 'register_screen.dart';
 
-/// E-posta + şifre ile giriş ekranı. Başarılı girişte ana ekrana (HomePage)
-/// yönlendirir; hata durumunda Supabase'in İngilizce mesajı yerine kısa
-/// Türkçe bir karşılık gösterir.
+/// Hangi giriş bağlamında olunduğunu (vatandaş ya da personel/müdür/admin)
+/// takip eder; hem UI metinlerini hem de giriş sonrası rol kontrolünü
+/// yönlendirir.
+enum _LoginType { vatandas, personel }
+
+/// İlk açılışta "Vatandaş Girişi" / "Personel Girişi" seçimini gösterir;
+/// bir seçim yapılınca aynı e-posta/şifre formu (tek kod yolu) o bağlamla
+/// gösterilir. Giriş başarılı olduktan hemen sonra, seçilen bağlamla
+/// public.users'daki gerçek role uyuşuyor mu diye kontrol edilir —
+/// uyuşmuyorsa oturum kapatılıp kullanıcı seçim ekranına geri döndürülür.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -20,6 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  _LoginType? _selectedType;
 
   @override
   void dispose() {
@@ -28,7 +38,19 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  void _selectType(_LoginType type) {
+    setState(() => _selectedType = type);
+  }
+
+  void _returnToSelection() {
+    _emailController.clear();
+    _passwordController.clear();
+    setState(() => _selectedType = null);
+  }
+
   Future<void> _submit() async {
+    final type = _selectedType;
+    if (type == null) return;
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
@@ -37,6 +59,33 @@ class _LoginScreenState extends State<LoginScreen> {
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
+
+      final userId = SupabaseService.client.auth.currentUser!.id;
+      final profile = await SupabaseService.client
+          .from('users')
+          .select('role')
+          .eq('id', userId)
+          .single();
+      final role = profile['role'] as String;
+      final isVatandasAccount = role == 'vatandas';
+      final expectedVatandas = type == _LoginType.vatandas;
+
+      if (isVatandasAccount != expectedVatandas) {
+        await SupabaseService.client.auth.signOut();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              expectedVatandas
+                  ? 'Bu hesap bir kurumsal (personel) hesabıdır. Lütfen Personel Girişi\'ni kullanın.'
+                  : 'Bu hesap bir vatandaş hesabıdır. Lütfen Vatandaş Girişi\'ni kullanın.',
+            ),
+          ),
+        );
+        _returnToSelection();
+        return;
+      }
+
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomePage()),
@@ -71,56 +120,110 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final type = _selectedType;
     return Scaffold(
-      appBar: AppBar(title: const Text('Giriş Yap')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextFormField(
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'E-posta'),
-                    validator: (value) =>
-                        (value == null || value.trim().isEmpty) ? 'E-posta girin' : null,
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _passwordController,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'Şifre'),
-                    validator: (value) =>
-                        (value == null || value.isEmpty) ? 'Şifre girin' : null,
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: _isLoading ? null : _submit,
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Giriş Yap'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton(
-                    onPressed: _isLoading
-                        ? null
-                        : () => Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                            ),
-                    child: const Text('Hesabın yok mu? Kayıt ol'),
-                  ),
-                ],
+      appBar: AppBar(
+        title: const Text('Giriş Yap'),
+        leading: type == null
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: _isLoading ? null : _returnToSelection,
               ),
+      ),
+      body: Center(
+        child: type == null ? _buildTypeSelector() : _buildLoginForm(type),
+      ),
+    );
+  }
+
+  Widget _buildTypeSelector() {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
+              onPressed: () => _selectType(_LoginType.vatandas),
+              child: const Text('Vatandaş Girişi'),
             ),
+            const SizedBox(height: 16),
+            FilledButton.tonal(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
+              onPressed: () => _selectType(_LoginType.personel),
+              child: const Text('Personel Girişi'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Vatandaş ve personel girişleri aynı e-posta/şifre form mantığını
+  // paylaşır; sadece başlık ve alttaki kayıt bağlantısı bağlama göre değişir.
+  Widget _buildLoginForm(_LoginType type) {
+    final isVatandas = type == _LoginType.vatandas;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isVatandas ? 'Vatandaş Girişi' : 'Personel Girişi',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 24),
+              TextFormField(
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(labelText: 'E-posta'),
+                validator: (value) =>
+                    (value == null || value.trim().isEmpty) ? 'E-posta girin' : null,
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Şifre'),
+                validator: (value) =>
+                    (value == null || value.isEmpty) ? 'Şifre girin' : null,
+              ),
+              const SizedBox(height: 24),
+              FilledButton(
+                onPressed: _isLoading ? null : _submit,
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Giriş Yap'),
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: _isLoading
+                    ? null
+                    : () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => isVatandas
+                                ? const RegisterScreen()
+                                : const PersonnelRegisterScreen(),
+                          ),
+                        ),
+                child: Text(
+                  isVatandas
+                      ? 'Hesabın yok mu? Kayıt ol'
+                      : 'Davet kodun var mı? Personel kaydı yap',
+                ),
+              ),
+            ],
           ),
         ),
       ),

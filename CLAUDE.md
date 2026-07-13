@@ -21,6 +21,13 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 - **Birim müdürü:** Kendi birimine kayıtlıdır. İki noktada devrededir: (1) Talep birime düştüğünde, talebi **belirli bir personele atar** (`assigned_to`). (2) Atanan personelin yazdığı çözüm raporunu görür; **onaylar** veya **reddeder.** Onaylarsa sonuç, talebi açan kişiye gider. Reddederse personele "reddedildi" bildirimi düşer ve talep yeniden ele alınır.
 - **Admin:** Tüm sisteme sahiptir; kullanıcı ve birim ekler/çıkarır, her şeyi görür ve yönetir.
 
+- **Kayıt modeli:** Vatandaşlar kendi kendine kayıt olur — `auth.users`'a `INSERT` olduğunda tetiklenen bir veritabanı trigger'ı (`handle_new_user`), `public.users` tablosuna `role = 'vatandas'`, `department_id = null` ile otomatik profil oluşturur. Personel, müdür ve admin hesapları kendi kendine kayıt olamaz; bu hesaplar admin tarafından sonradan oluşturulur veya bir vatandaş hesabı admin tarafından yükseltilir.
+  > Not: Admin'in personel/müdür rolü atama/yükseltme işlemini yapacağı arayüz henüz tasarlanmadı, MVP sonrası ele alınacak.
+
+> **Planlanan mimari karar (2026-07-13, birim danışman hocasıyla istişare sonrası netleşti — henüz kod olarak uygulanmadı):**
+> - **Vatandaş erişimi (hibrit model):** Vatandaş iki şekilde talep açabilir. (a) Hesap oluşturup (mevcut kayıt/giriş sistemiyle) giriş yaparsa, tüm geçmiş taleplerini hesabından görebilir. (b) Hesap açmak istemezse anonim olarak talep açabilir; bu durumda talebe kısa, insan tarafından okunabilir bir erişim kodu (`access_token`, 8-10 haneli, karışıklık yaratan karakterler hariç) otomatik atanır ve e-posta ile bildirilir. Vatandaş bu kodu, ayrı bir "Sonucu Sorgula" ekranından, giriş yapmadan kullanarak talebinin durumunu her zaman sorgulayabilir.
+> - **Personel/Müdür/Admin kaydı (davet kodu modeli):** Kendi kendine kayıt olamazlar. Admin, panelinden belirli bir birime ve role bağlı bir davet kodu (personnel invite code) üretir ve ilgili kişiye iletir. Personel, kayıt ekranında e-posta + kendi seçtiği şifre + ad-soyad + bu davet koduyla kayıt olur; kod geçerliyse hesap, kodun tanımladığı rol/birimle oluşturulur ve kod tekrar kullanılamaz hale gelir.
+
 ## Talebi kim açar, kim çözer
 - Talebi hem **vatandaş** hem **personel** açabilir.
 - Talep, seçilen kategoriye göre ilgili birime düşer.
@@ -36,6 +43,8 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 - Kayıt sonrası **e-posta doğrulaması** istenir (Supabase'in yerleşik e-posta doğrulaması).
 - **SMS doğrulaması kullanılmaz** (ücretli servis gerektirdiği için).
 
+> **Planlanan mimari karar (2026-07-13, henüz uygulanmadı):** Login ekranı "Vatandaş Girişi" / "Personel Girişi" olarak iki ayrı giriş noktası sunacak. İkisi de aynı tek Supabase backend'ine bağlanır (ayrı sunucu yok); giriş başarılı olduktan sonra Flutter, dönen kullanıcının rolünü seçilen giriş noktasıyla karşılaştırır — uyuşmazsa oturumu kapatıp "Bu giriş sadece personel/vatandaş için" gibi bir hata gösterir. Personel Girişi ekranında "Kayıt Ol" bağlantısı, davet kodu isteyen personel kayıt ekranına gider.
+
 ## Veri modeli (tablolar)
 - **departments** — birimler. Alanlar: `id`, `name`.
 - **users** — kullanıcılar. Alanlar: `id`, `email`, `full_name`, `role`, `department_id`. (`role` ve `department_id` yetki mantığının temelidir. Personel ve müdür bir birime bağlıdır; vatandaşın birimi yoktur.)
@@ -45,6 +54,26 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 - **notifications** — bildirimler. Alanlar: `id`, `user_id`, `request_id`, `message`, `is_read`, `created_at`.
 
 > Not: Birimlerin (departments) somut listesi henüz belirlenmedi; ileride tanımlanacaktır. Bu, kod yapısını etkilemez; yalnızca veri olarak eklenecektir.
+
+> **Planlanan şema değişiklikleri (2026-07-13, henüz uygulanmadı):**
+> - `requests.created_by` alanı nullable olacak (anonim talepler için).
+> - `requests` tablosuna yeni bir `access_token` sütunu eklenecek (anonim sorgulama için, kısa/okunabilir kod).
+> - Yeni bir `personnel_invites` tablosu eklenecek (kod, hedef birim, hedef rol, kullanıldı mı, kimin oluşturduğu).
+
+## personnel_invites Foreign Key Kararları (ON DELETE davranışları)
+
+- department_id → departments.id : ON DELETE CASCADE
+  (Birim silinirse, o birime ait kullanılmamış/kullanılmış davet kodları da silinir. Sebep: kodun tek işlevi "şu birime personel ata" demek, birim yoksa kodun sistemde durmasının anlamı yok.)
+
+- created_by → users.id (admin) : ON DELETE SET NULL
+  (Admin hesabı silinirse, oluşturduğu davet kodları silinmez, sadece "kim oluşturdu" bilgisi NULL olur. Kodun işlevselliği bundan etkilenmez.)
+
+- used_by → users.id (personel) : ON DELETE SET NULL
+  (Personel hesabı silinirse, kullandığı davet kodu kaydı silinmez, sadece "kim kullandı" bilgisi NULL olur. Böylece "kaç kod üretildi, kaçı kullanıldı" gibi istatistikler bozulmaz.)
+
+## Gelecekte Değerlendirilebilir: Soft Delete Deseni
+
+Şu an users tablosunda bir kullanıcı silindiğinde satır fiziksel olarak veritabanından kalkıyor (hard delete). İleride, kurumsal bir yaklaşım olarak users tablosuna is_active (boolean) veya deleted_at (timestamp, nullable) sütunu eklenip "silme" işleminin aslında bu alanı güncellemek olması (soft delete) değerlendirilebilir. Bu sayede personel/admin hesapları hiçbir zaman fiziksel olarak silinmez, geçmiş kayıtlar (davet kodları, talepler, sonuçlar) hep tutarlı kalır. Bu, MVP kapsamının dışında, ileride ele alınacak bir iyileştirme notu olarak buraya eklendi, şu an için herhangi bir kod değişikliği gerektirmiyor.
 
 ## Talep durum akışı
 `requests.status`: `acik` → `cozuldu (onay bekliyor)` → `onaylandi` (kullanıcıya iletildi) **veya** `reddedildi` (personele geri döndü, yeniden işleme alınır). Reddedilen talep tekrar çözülüp yeniden onaya sunulabilir.
@@ -100,7 +129,7 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 
 **notifications:** `SELECT` sadece kendine gelen; `INSERT` sistem/trigger otomatik; `UPDATE` (okundu) sadece kendi bildirimi.
 
-> **Optimizasyon notu:** `users`, `requests`, `results`, `notifications` tablolarında `current_user_role()` / `current_user_department()` gibi güvenli yardımcı fonksiyonlar (`security definer` ile) henüz yazılmadı — şu an doğrudan subquery kullanılıyor. Bu, ileride kısır döngü (infinite recursion) riski çıkarsa ele alınacak bir optimizasyon notu olarak düşülsün.
+> **Güncelleme (2026-07-10):** `users` tablosunda kendi kendine subquery yapan politikalar "infinite recursion detected in policy for relation users" (kod 42P17) hatası verdi. Çözüm olarak `current_user_role()` ve `current_user_department()` adında iki `security definer` fonksiyon oluşturuldu (RLS'i by-pass ederek `users` tablosunu okuyorlar, böylece döngü kırılıyor). `users`, `requests`, `results` tablolarındaki ilgili tüm politikalar (`(select role from users where id = auth.uid())` / `(select department_id from users where id = auth.uid())` kalıbı geçenler) bu fonksiyonları kullanacak şekilde yeniden yazıldı. `notifications` tablosunda bu kalıp hiç kullanılmadığı için dokunulmadı.
 
 ## Geliştirme prensipleri (Claude Code bunlara uyacak)
 - **Parçalı ve modüler kod yaz.** Tek dev dosyalar oluşturma; her şeyi mantıklı klasörlere ve ayrı dosyalara böl (ekranlar, veri modelleri, servisler, Supabase bağlantısı ayrı ayrı).
@@ -148,3 +177,24 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
   - notifications: kendi bildirimini görme (SELECT); sadece sistem/trigger ekleyebilir, normal kullanıcı elle ekleyemez — with check (false) (INSERT); kendi bildirimini okundu işaretleme (UPDATE).
   - Öğrenilen ek dersler: (1) bir kuralı yanlış tabloya eklemek mümkün olduğu için, tüm tablolardaki politika sayıları ve isimleri planla karşılaştırılarak tek tek doğrulandı; (2) `exists (select 1 from ... where ...)` kalıbı, bir tablonun RLS kuralının başka bir tablodaki (örn. requests) ilişkili kayda bakması gerektiğinde kullanıldı (örn. results tablosunun, bağlı olduğu request'in görülebilirlik kurallarını miras alması).
   - Sıradaki adım: Tüm tablo yapısı + RLS politikalarını tek bir SQL migration dosyası olarak dışa aktarıp git'e commit'lemek, ardından Flutter tarafında auth ekranlarına (giriş/kayıt) geçmek.
+- **2026-07-10:** Swagger UI, Docker üzerinde kuruldu ve üç teknik engel (apikey'siz şema erişimi, yanlış host adresi, eksik securityDefinitions) sırayla çözülerek tam çalışır hale getirildi.
+- **2026-07-10:** users tablosunda kritik bir RLS hatası (infinite recursion, kod 42P17) tespit edildi ve current_user_role()/current_user_department() adlı security definer fonksiyonlarıyla çözüldü.
+- **2026-07-10:** Tüm 5 tablo (departments, users, requests, results, notifications) hem terminal (curl) hem Swagger UI üzerinden GET istekleriyle test edildi — hepsi 200 ve boş liste [] döndürdü, RLS'in gerçekten çalıştığı doğrulandı.
+- **2026-07-10:** Sıradaki adım: Migration dosyasını çıkarıp commit'lemek, ardından Flutter auth ekranlarına geçmek.
+- **2026-07-10:** Kullanıcı kaydı (signUp) ile public.users profili arasındaki senkronizasyon için trigger tabanlı yöntem uygulandı: handle_new_user() adlı security definer fonksiyonu ve auth.users üzerinde after insert tetiklenen on_auth_user_created trigger'ı oluşturuldu. Fonksiyon, raw_user_meta_data içindeki full_name'i okuyup public.users'a role='vatandas', department_id=null ile otomatik satır ekliyor.
+  - Kurulum pg_proc (prosecdef = true) ve pg_trigger sorgularıyla doğrulandı — fonksiyon ve trigger veritabanında gerçekten mevcut.
+  - Henüz yapılmadı / sıradaki adım: gerçek bir signUp isteğiyle uçtan uca test (auth.users + public.users'a doğru yazılıyor mu doğrulamak). Bu test tamamlanınca migration dosyası çıkarılıp commit'lenecek, ardından MVP akışına geçilecek.
+- **2026-07-13:** signUp testinde SMTP servisi tanımlı olmadığı için e-posta doğrulama maili gönderimi başarısız oluyor ve tüm kayıt 500 hatasıyla rollback ediliyor. Yerel geliştirmede GOTRUE_MAILER_AUTOCONFIRM=true ile e-posta doğrulaması geçici olarak devre dışı bırakıldı (SMTP servisi henüz bağlı değil). Production'a geçmeden önce gerçek bir SMTP servisi bağlanıp bu ayar kapatılmalı.
+  - Not: Ayar, ana Supabase compose dosyasında (`C:\Users\makto\supabase\docker\docker-compose.yml`, bu repo dışında) zaten `${ENABLE_EMAIL_AUTOCONFIRM}` değişkenine bağlıydı; asıl değişiklik aynı klasördeki `.env` dosyasında `ENABLE_EMAIL_AUTOCONFIRM=false` → `true` yapmak oldu, ardından `docker compose up -d auth` ile auth servisi yeniden oluşturuldu.
+- **2026-07-13:** Kullanıcı kaydı (signUp) uçtan uca gerçek bir istekle test edildi ve başarıyla doğrulandı: Swagger UI üzerinden atılan bir signup isteği 200 döndü, auth.users'a kayıt düştü, handle_new_user() trigger'ı çalışıp public.users'a otomatik profil (role='vatandas', department_id=null, full_name doğru) oluşturdu. Bu, projenin en kritik akışlarından birinin (kimlik doğrulama ↔ profil senkronizasyonu) uçtan uca çalıştığının kanıtı oldu.
+  - Test sırasında iki ayrı sorun tespit edilip çözüldü: (1) yerel Docker kurulumunda SMTP servisi tanımlı olmadığı için kayıt sonrası e-posta doğrulama gönderimi başarısız oluyor ve tüm kaydı geri alıyordu (rollback, HTTP 500); GOTRUE_MAILER_AUTOCONFIRM=true ayarıyla yerel test için e-posta doğrulaması geçici olarak devre dışı bırakıldı, kullanıcılar artık otomatik onaylanıyor (email_confirmed_at anında dolduruluyor). (2) Swagger UI'a, REST API şemasının yanına ikinci bir şema (swagger/auth-openapi.json) eklenerek Auth API (signup, token) endpoint'leri de görsel olarak test edilebilir hale getirildi.
+  - ÖNEMLİ NOT: GOTRUE_MAILER_AUTOCONFIRM=true sadece yerel geliştirme içindir. Production'a geçmeden önce gerçek bir SMTP servisi bağlanıp bu ayar kapatılmalı, aksi halde gerçek kullanıcılar e-posta doğrulaması yapmadan hesap açabilir.
+  - Auth akışının uçtan uca çalıştığı doğrulandığı için, ertelenen migration dosyasının çıkarılması artık bir sonraki adım olarak netleşti.
+- **2026-07-13:** Flutter tarafında giriş (login) ve kayıt (register) ekranları oluşturuldu; AuthGate ile uygulama açılışında oturum kontrolü yapılıp kullanıcı ilgili ekrana yönlendiriliyor.
+  - Kayıt sonrası bilinçli olarak signOut() çağrılıyor (GOTRUE_MAILER_AUTOCONFIRM açık olduğu için signUp otomatik oturum açtırıyor, kullanıcı yine de login ekranına yönlendiriliyor).
+  - Ad-soyad alanındaki bir doğrulama açığı (sadece boşluk karakteri geçerli sayılıyordu) düzeltildi.
+  - Tüm akış gerçek Flutter arayüzünden uçtan uca test edildi: kayıt, login ekranına yönlendirme, yanlış şifre hata mesajı, doğru şifreyle giriş ve ana ekrana ulaşma — hepsi başarılı.
+  - Migration dosyası daha önce push edildi. Sıradaki adım: talep oluşturma ve listeleme ekranları (MVP'nin çekirdek akışı).
+- **2026-07-13:** Birim danışman hocasıyla istişare sonrası, vatandaş erişimi için hibrit model (hesaplı + anonim kod ile sorgulama) ve personel kaydı için davet kodu tabanlı model tasarım kararı olarak netleşti. Henüz kod olarak uygulanmadı, sıradaki adım olarak planlandı.
+- **2026-07-13:** handle_new_user() trigger'ı, kayıt sırasında invite_code gönderilip gönderilmediğine göre dallanacak şekilde güncellendi: kod varsa personnel_invites tablosundan role/department_id okunup personel profili oluşturuluyor ve kod "kullanıldı" işaretleniyor; kod yoksa eskisi gibi vatandaş profili oluşturuluyor. Dört senaryo (geçerli kod, tekrar kullanım reddi, kodsuz kayıt, veritabanı doğrulamaları) Swagger UI üzerinden test edilip doğrulandı.
+- **2026-07-13:** Admin davet kodu oluşturma ekranı (admin_invite_screen.dart), personel kayıt ekranı (personnel_register_screen.dart) ve giriş ekranının Vatandaş Girişi/Personel Girişi olarak ikiye ayrılması + giriş sonrası rol doğrulaması (login_screen.dart) tamamlandı. Uçtan uca test edildi: admin daveti oluşturma, o davetle personel kaydı, doğru/yanlış giriş türü senaryoları, rol uyuşmazlığında otomatik çıkış ve Türkçe hata mesajı — hepsi doğrulandı.
