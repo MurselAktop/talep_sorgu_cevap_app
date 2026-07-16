@@ -25,6 +25,8 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
   final _passwordController = TextEditingController();
   final _inviteCodeController = TextEditingController();
   bool _isLoading = false;
+  String? _emailErrorText;
+  String? _inviteCodeErrorText;
 
   @override
   void dispose() {
@@ -36,6 +38,10 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
   }
 
   Future<void> _submit() async {
+    setState(() {
+      _emailErrorText = null;
+      _inviteCodeErrorText = null;
+    });
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
@@ -53,9 +59,17 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
       );
     } on AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_describeAuthError(e))),
-      );
+      if (_isInviteCodeError(e.message)) {
+        setState(() => _inviteCodeErrorText =
+            'Bu davet kodu daha önce kullanılmış veya geçersiz. Lütfen yöneticinizle iletişime geçin.');
+      } else if (e.message.toLowerCase().contains('already registered')) {
+        setState(() => _emailErrorText =
+            'Bu e-posta adresi sistemde zaten kayıtlı. Lütfen giriş yapın.');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_describeAuthError(e))),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -69,17 +83,16 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
   // Davet kodu hatası, handle_new_user() trigger'ının Postgres exception'ı
   // GoTrue tarafından sarmalanarak AuthException.message içine düşüyor; bu
   // yüzden hem tam mesaja hem de "davet" geçen genel bir eşleşmeye bakıyoruz.
-  String _describeAuthError(AuthException e) {
-    final message = e.message;
-    if (message == 'Geçersiz veya kullanılmış davet kodu.' ||
-        message.toLowerCase().contains('davet')) {
-      return 'Girdiğiniz davet kodu geçersiz veya daha önce kullanılmış. Lütfen kodu kontrol edip tekrar deneyin.';
-    }
+  bool _isInviteCodeError(String message) {
+    return message == 'Geçersiz veya kullanılmış davet kodu.' ||
+        message.toLowerCase().contains('davet');
+  }
 
-    final lower = message.toLowerCase();
-    if (lower.contains('already registered')) {
-      return 'Bu e-posta adresi zaten kayıtlı.';
-    }
+  // Supabase (GoTrue) hatalarını kısa Türkçe mesajlara çeviriyoruz. Davet kodu
+  // ve "e-posta zaten kayıtlı" hataları burada değil, inline alan hataları
+  // olarak _submit içinde ayrıca ele alınıyor.
+  String _describeAuthError(AuthException e) {
+    final lower = e.message.toLowerCase();
     if (lower.contains('password') && lower.contains('least')) {
       return 'Şifre en az 6 karakter olmalıdır.';
     }
@@ -113,7 +126,10 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'E-posta'),
+                    decoration: InputDecoration(
+                      labelText: 'E-posta',
+                      errorText: _emailErrorText,
+                    ),
                     validator: (value) {
                       if (value == null || value.trim().isEmpty) return 'E-posta girin';
                       if (!_emailRegex.hasMatch(value.trim())) {
@@ -137,7 +153,10 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
                   TextFormField(
                     controller: _inviteCodeController,
                     textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(labelText: 'Davet Kodu'),
+                    decoration: InputDecoration(
+                      labelText: 'Davet Kodu',
+                      errorText: _inviteCodeErrorText,
+                    ),
                     validator: (value) =>
                         (value == null || value.trim().isEmpty) ? 'Davet kodu girin' : null,
                   ),
