@@ -21,6 +21,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  String? _emailErrorText;
 
   @override
   void dispose() {
@@ -31,6 +32,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _submit() async {
+    setState(() => _emailErrorText = null);
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
@@ -57,9 +59,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
     } on AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_describeAuthError(e))),
-      );
+      if (e.message.toLowerCase().contains('already registered')) {
+        setState(() => _emailErrorText =
+            'Bu e-posta adresi sistemde zaten kayıtlı. Lütfen giriş yapın.');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_describeAuthError(e))),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -70,12 +77,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  // Supabase (GoTrue) hatalarını kısa Türkçe mesajlara çeviriyoruz.
+  // Supabase (GoTrue) hatalarını kısa Türkçe mesajlara çeviriyoruz. "E-posta
+  // zaten kayıtlı" hatası burada değil, inline alan hatası olarak _submit
+  // içinde ayrıca ele alınıyor.
   String _describeAuthError(AuthException e) {
     final message = e.message.toLowerCase();
-    if (message.contains('already registered')) {
-      return 'Bu e-posta adresi zaten kayıtlı.';
-    }
     if (message.contains('password') && message.contains('least')) {
       return 'Şifre en az 6 karakter olmalıdır.';
     }
@@ -109,7 +115,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'E-posta'),
+                    decoration: InputDecoration(
+                      labelText: 'E-posta',
+                      errorText: _emailErrorText,
+                    ),
                     validator: (value) =>
                         (value == null || value.trim().isEmpty) ? 'E-posta girin' : null,
                   ),

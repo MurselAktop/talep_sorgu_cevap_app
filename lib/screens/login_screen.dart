@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/auth_service.dart';
 import '../services/supabase_service.dart';
+import 'citizen_guest_menu_screen.dart';
 import 'home_screen.dart';
 import 'personnel_register_screen.dart';
 import 'register_screen.dart';
@@ -73,12 +74,15 @@ class _LoginScreenState extends State<LoginScreen> {
       if (isVatandasAccount != expectedVatandas) {
         await SupabaseService.client.auth.signOut();
         if (!mounted) return;
+        // Rol uyuşmazlığı mesajı, hesabın var olup olmadığını/rolünü
+        // sızdırmamak için kasıtlı olarak genel tutuluyor (yanlış şifre
+        // mesajıyla aynı belirsizlik seviyesinde).
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               expectedVatandas
-                  ? 'Bu hesap bir kurumsal (personel) hesabıdır. Lütfen Personel Girişi\'ni kullanın.'
-                  : 'Bu hesap bir vatandaş hesabıdır. Lütfen Vatandaş Girişi\'ni kullanın.',
+                  ? 'Giriş bilgileri hatalı. Böyle bir vatandaş hesabı bulunamadı.'
+                  : 'Giriş bilgileri hatalı. Böyle bir personel hesabı bulunamadı.',
             ),
           ),
         );
@@ -155,6 +159,18 @@ class _LoginScreenState extends State<LoginScreen> {
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
               onPressed: () => _selectType(_LoginType.personel),
               child: const Text('Personel Girişi'),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(56),
+                foregroundColor: Colors.grey.shade700,
+                side: BorderSide(color: Colors.grey.shade400),
+              ),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CitizenGuestMenuScreen()),
+              ),
+              child: const Text('Giriş Yapmadan Devam Et'),
             ),
           ],
         ),

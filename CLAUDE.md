@@ -17,8 +17,8 @@ Bu, vatandaşların ve kurum personelinin arıza/talep/şikâyet girdiği bir mo
 Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level Security / RLS) uygulanır — Flutter tarafında `if` bloklarıyla değil.
 
 - **Vatandaş:** Talep açar; yalnızca kendi taleplerini ve onların sonuçlarını görür.
-- **Personel:** Kendi birimine kayıtlıdır. Herhangi bir birime talep açabilir (örn. İK personeli teknik birime yazıcı arızası bildirir). Kendi birimine gelen talepleri çözer ve rapor yazar. Kendi açtığı talebi kendisi de çözebilir (engellenmez; kaydı sistemde resmi olarak tutulur).
-- **Birim müdürü:** Kendi birimine kayıtlıdır. İki noktada devrededir: (1) Talep birime düştüğünde, talebi **belirli bir personele atar** (`assigned_to`). (2) Atanan personelin yazdığı çözüm raporunu görür; **onaylar** veya **reddeder.** Onaylarsa sonuç, talebi açan kişiye gider. Reddederse personele "reddedildi" bildirimi düşer ve talep yeniden ele alınır.
+- **Personel:** Kendi birimine kayıtlıdır. Herhangi bir birime talep açabilir (örn. İK personeli teknik birime yazıcı arızası bildirir). Kendi birimine gelen talepleri çözer ve rapor yazar. Kendi açtığı talebi kendisi de çözebilir (engellenmez; kaydı sistemde resmi olarak tutulur). Personel, SADECE kendisine (`assigned_to` alanında) atanmış talepleri görebilir. Birimine gelen ama başka bir personele atanmış talepleri GÖREMEZ. (Bu, önceki "şeffaflık" kararından BİLİNÇLİ bir sapmadır, 2026-07-14 tarihinde alındı.)
+- **Birim müdürü:** Kendi birimine kayıtlıdır. İki noktada devrededir: (1) Talep birime düştüğünde, talebi **belirli bir personele atar** (`assigned_to`). (2) Atanan personelin yazdığı çözüm raporunu görür; **onaylar** veya **reddeder.** Onaylarsa sonuç, talebi açan kişiye gider. Reddederse personele "reddedildi" bildirimi düşer ve talep yeniden ele alınır. Müdür, kendi biriminin TÜM taleplerini görebilir (atanmış/atanmamış fark etmeksizin) — çünkü atama yapabilmesi için önce görmesi gerekir.
 - **Admin:** Tüm sisteme sahiptir; kullanıcı ve birim ekler/çıkarır, her şeyi görür ve yönetir.
 
 - **Kayıt modeli:** Vatandaşlar kendi kendine kayıt olur — `auth.users`'a `INSERT` olduğunda tetiklenen bir veritabanı trigger'ı (`handle_new_user`), `public.users` tablosuna `role = 'vatandas'`, `department_id = null` ile otomatik profil oluşturur. Personel, müdür ve admin hesapları kendi kendine kayıt olamaz; bu hesaplar admin tarafından sonradan oluşturulur veya bir vatandaş hesabı admin tarafından yükseltilir.
@@ -27,12 +27,14 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 > **Planlanan mimari karar (2026-07-13, birim danışman hocasıyla istişare sonrası netleşti — henüz kod olarak uygulanmadı):**
 > - **Vatandaş erişimi (hibrit model):** Vatandaş iki şekilde talep açabilir. (a) Hesap oluşturup (mevcut kayıt/giriş sistemiyle) giriş yaparsa, tüm geçmiş taleplerini hesabından görebilir. (b) Hesap açmak istemezse anonim olarak talep açabilir; bu durumda talebe kısa, insan tarafından okunabilir bir erişim kodu (`access_token`, 8-10 haneli, karışıklık yaratan karakterler hariç) otomatik atanır ve e-posta ile bildirilir. Vatandaş bu kodu, ayrı bir "Sonucu Sorgula" ekranından, giriş yapmadan kullanarak talebinin durumunu her zaman sorgulayabilir.
 > - **Personel/Müdür/Admin kaydı (davet kodu modeli):** Kendi kendine kayıt olamazlar. Admin, panelinden belirli bir birime ve role bağlı bir davet kodu (personnel invite code) üretir ve ilgili kişiye iletir. Personel, kayıt ekranında e-posta + kendi seçtiği şifre + ad-soyad + bu davet koduyla kayıt olur; kod geçerliyse hesap, kodun tanımladığı rol/birimle oluşturulur ve kod tekrar kullanılamaz hale gelir.
+>
+> **Durum (2026-07-14):** Uygulandı — hem veritabanı (personnel_invites tablosu, handle_new_user() dallanması, create_request/get_request_by_token RPC'leri) hem Flutter tarafı (login/register ekranları, admin_invite_screen.dart, citizen_guest_menu_screen.dart, request_create_screen.dart, query_result_screen.dart) tamamlandı. Ayrıntılar için bkz. İlerleme Günlüğü.
 
 ## Talebi kim açar, kim çözer
 - Talebi hem **vatandaş** hem **personel** açabilir.
 - Talep, seçilen kategoriye göre ilgili birime düşer.
 - **Atama modeli:** Talep birime düştüğünde, birim müdürü talebi belirli bir personele atar (`assigned_to`). Personel talebi kendi seçerek üstlenmez; atama müdür tarafından yapılır.
-- **Şeffaflık:** Birimdeki diğer personel, kendine atanmamış olsa bile o talebi görebilir. Ancak yalnızca `assigned_to` alanında kendi kimliği olan personel talebi çözüp rapor yazabilir.
+- **Görünürlük modeli (2026-07-14'te güncellendi — eski "şeffaflık" kararından kasıtlı sapma):** Personel SADECE kendisine atanmış (`assigned_to = kendisi`) talepleri görebilir, birimin geri kalanını göremez. Müdür, kendi biriminin TÜM taleplerini (atanmış/atanmamış) görebilir — atama yapabilmesi bu görünürlüğe bağlıdır. Admin her şeyi görür. Bir talebi açan kişi (vatandaş/personel), atanmış olsun olmasın, HER ZAMAN kendi açtığı talebi "Taleplerim" ekranından görebilir (bu ayrı bir kural, görünürlük modelinden etkilenmez).
 - Personel talepleri ile vatandaş talepleri **farklı etiketlenir** (`requester_type` = `vatandas` / `personel`). Bu, filtreleme ve raporlama içindir.
 - **Admin yetkisi:** Admin, herhangi bir talebi koşulsuz olarak güncelleyebilir (durum, atama dahil) — kritik durumlarda sisteme müdahale yetkisi.
 - **Açan kişinin düzenleme hakkı:** Talebi açan kişi (vatandaş/personel), talep henüz kimseye atanmamışsa (`assigned_to` boşken) talebin içeriğini düzenleyebilir veya iptal edebilir. Talep atandıktan sonra bu hak kapanır.
@@ -44,14 +46,17 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 - **SMS doğrulaması kullanılmaz** (ücretli servis gerektirdiği için).
 
 > **Planlanan mimari karar (2026-07-13, henüz uygulanmadı):** Login ekranı "Vatandaş Girişi" / "Personel Girişi" olarak iki ayrı giriş noktası sunacak. İkisi de aynı tek Supabase backend'ine bağlanır (ayrı sunucu yok); giriş başarılı olduktan sonra Flutter, dönen kullanıcının rolünü seçilen giriş noktasıyla karşılaştırır — uyuşmazsa oturumu kapatıp "Bu giriş sadece personel/vatandaş için" gibi bir hata gösterir. Personel Girişi ekranında "Kayıt Ol" bağlantısı, davet kodu isteyen personel kayıt ekranına gider.
+>
+> **Durum (2026-07-14):** Uygulandı — bkz. `lib/screens/login_screen.dart` ve İlerleme Günlüğü. Ayrıca giriş yapmadan devam edip anonim talep açabilme / kod ile sorgulama seçeneği de (`citizen_guest_menu_screen.dart`) eklendi.
 
 ## Veri modeli (tablolar)
 - **departments** — birimler. Alanlar: `id`, `name`.
 - **users** — kullanıcılar. Alanlar: `id`, `email`, `full_name`, `role`, `department_id`. (`role` ve `department_id` yetki mantığının temelidir. Personel ve müdür bir birime bağlıdır; vatandaşın birimi yoktur.)
-- **requests** — talepler/şikâyetler. Alanlar: `id`, `title`, `description`, `category`, `status`, `requester_type`, `created_by`, `department_id`, `assigned_to`, `created_at`. (`assigned_to`, müdürün talebi atadığı personelin `id`'sidir; atanmamış talepler için `null` olabilir.)
+- **requests** — talepler/şikâyetler. Alanlar: `id`, `title`, `description`, `category`, `status`, `requester_type`, `created_by`, `department_id`, `assigned_to`, `access_token`, `created_at`. (`assigned_to`, müdürün talebi atadığı personelin `id`'sidir; atanmamış talepler için `null` olabilir. `created_by` anonim talepler için `null` olabilir. `access_token`, `generate_access_token()` ile otomatik üretilen, anonim sorgulama için kullanılan kısa/okunabilir koddur.)
 - **attachments** — foto/video ekleri (ileride). Alanlar: `id`, `request_id`, `file_url`, `media_type`. (Dosyalar Supabase Storage'da; tabloda yalnızca adres saklanır.)
 - **results** — çözüm raporları. Alanlar: `id`, `request_id`, `report_text`, `resolved_by`, `approval_status`, `approved_by`, `created_at`. (`approval_status` = `beklemede` / `onaylandi` / `reddedildi`; `resolved_by` çözen personel, `approved_by` onaylayan müdür.)
 - **notifications** — bildirimler. Alanlar: `id`, `user_id`, `request_id`, `message`, `is_read`, `created_at`.
+- **personnel_invites** — personel/müdür/admin davet kodları. Alanlar: `id`, `code`, `department_id`, `role`, `created_by`, `used`, `used_by`, `used_at`, `created_at`. (`code`, `generate_invite_code()` ile otomatik üretilir; kod kullanılınca `used = true` olur ve tekrar kullanılamaz. FK davranışları için bkz. aşağıdaki "personnel_invites Foreign Key Kararları" bölümü.)
 
 > Not: Birimlerin (departments) somut listesi henüz belirlenmedi; ileride tanımlanacaktır. Bu, kod yapısını etkilemez; yalnızca veri olarak eklenecektir.
 
@@ -59,6 +64,8 @@ Dört rol vardır. Yetki kuralları veritabanı seviyesinde (Supabase Row Level 
 > - `requests.created_by` alanı nullable olacak (anonim talepler için).
 > - `requests` tablosuna yeni bir `access_token` sütunu eklenecek (anonim sorgulama için, kısa/okunabilir kod).
 > - Yeni bir `personnel_invites` tablosu eklenecek (kod, hedef birim, hedef rol, kullanıldı mı, kimin oluşturduğu).
+>
+> **Durum (2026-07-14):** Uygulandı — üç madde de veritabanında tamamlandı (yukarıdaki tablo listesine yansıtıldı). Ayrıca `requests.requester_type` için `in ('vatandas', 'anonim', 'personel')` CHECK constraint'i eklendi.
 
 ## personnel_invites Foreign Key Kararları (ON DELETE davranışları)
 
@@ -120,8 +127,8 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 - `INSERT`: sadece kendi kaydını oluşturabilir — `id = auth.uid()`
 - `UPDATE`: kendi profilini günceller ama rol ve `department_id` değişmemiş olmalı (`with check` ile korunur, `is not distinct from` kullanılarak null uyumluluğu sağlanır)
 
-**requests** (7 kural):
-- `SELECT` (3 kural): (1) açan kişi kendi talebini görür — `created_by = auth.uid()`; (2) personel/müdür kendi biriminin tüm taleplerini görür — `department_id` eşleşmesi + rol `in (personel, mudur)`; (3) admin hepsini görür
+**requests** (8 kural):
+- `SELECT` (4 kural, 2026-07-14'te güncellendi): (1) açan kişi kendi talebini görür — `created_by = auth.uid()` (`acan_kisi_kendi_talebini_gorebilir`); (2) müdür kendi biriminin TÜM taleplerini görür — `department_id` eşleşmesi + rol = `mudur` (`mudur_biriminin_tum_taleplerini_gorebilir`); (3) personel SADECE kendisine atanan talepleri görür — `assigned_to = auth.uid()` + rol = `personel` (`personel_atanan_talepleri_gorebilir`); (4) admin hepsini görür (`admin_tum_talepleri_gorebilir`). Not: personel artık biriminin tüm taleplerini göremez, bu eski "şeffaflık" planından bilinçli bir sapmadır.
 - `INSERT`: giriş yapmış herkes, `created_by = auth.uid()` olmalı
 - `UPDATE` (3 kural): (1) müdür, kendi biriminde durum/atama günceller; (2) açan kişi, sadece `assigned_to` boşken düzenler/iptal eder; (3) admin koşulsuz günceller
 
@@ -130,6 +137,8 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 **notifications:** `SELECT` sadece kendine gelen; `INSERT` sistem/trigger otomatik; `UPDATE` (okundu) sadece kendi bildirimi.
 
 > **Güncelleme (2026-07-10):** `users` tablosunda kendi kendine subquery yapan politikalar "infinite recursion detected in policy for relation users" (kod 42P17) hatası verdi. Çözüm olarak `current_user_role()` ve `current_user_department()` adında iki `security definer` fonksiyon oluşturuldu (RLS'i by-pass ederek `users` tablosunu okuyorlar, böylece döngü kırılıyor). `users`, `requests`, `results` tablolarındaki ilgili tüm politikalar (`(select role from users where id = auth.uid())` / `(select department_id from users where id = auth.uid())` kalıbı geçenler) bu fonksiyonları kullanacak şekilde yeniden yazıldı. `notifications` tablosunda bu kalıp hiç kullanılmadığı için dokunulmadı.
+
+> **Güncelleme (2026-07-14):** Hibrit vatandaş erişimi ve davet kodu modeli için RLS genişletildi: (1) `personnel_invites` tablosuna admin-only 4 politika eklendi (`current_user_role() = 'admin'` ile SELECT/INSERT/UPDATE/DELETE); (2) `requests` tablosuna, `anon` rolü için ayrı bir `INSERT` politikası eklendi (`to anon with check (created_by is null)`) — böylece anonim kullanıcılar da (giriş yapmadan) talep açabiliyor. `create_request` ve `get_request_by_token` RPC fonksiyonları `security definer` olarak yazıldığı için PostgREST'in `.insert().select()` ikili SELECT+INSERT RLS gereksinimini RLS politikası eklemeden aşıyor; bu iki fonksiyon kendi içlerinde `auth.uid()` doğrulaması yapıyor.
 
 ## Geliştirme prensipleri (Claude Code bunlara uyacak)
 - **Parçalı ve modüler kod yaz.** Tek dev dosyalar oluşturma; her şeyi mantıklı klasörlere ve ayrı dosyalara böl (ekranlar, veri modelleri, servisler, Supabase bağlantısı ayrı ayrı).
@@ -142,9 +151,20 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 ## Geliştirme sırası (yol haritası)
 1. ✅ Git + GitHub bağlantısı
 2. ✅ Flutter iskeleti + Supabase paketi
-3. Kimlik doğrulama (e-posta + şifre + e-posta doğrulaması) ve roller + RLS (SELECT tüm birime açık, UPDATE yalnızca `assigned_to = kendisi` olan personele açık)
-4. Çekirdek veri modeli (tablolar)
-5. Çalışan çekirdek / MVP (talep aç, listele, müdür personele atar, atanan personel çözer, müdür onayı, sonuç)
+3. ✅ Kimlik doğrulama (e-posta + şifre + e-posta doğrulaması) ve roller + RLS (SELECT tüm birime açık, UPDATE yalnızca `assigned_to = kendisi` olan personele açık)
+4. ✅ Çekirdek veri modeli (tablolar)
+5. ✅ Çalışan çekirdek / MVP (talep aç, listele, müdür personele atar, atanan personel çözer, müdür onayı, sonuç) — tüm alt adımlar tamamlandı, bkz. MVP tamamlanma kontrol listesi
+
+## MVP tamamlanma kontrol listesi (madde 5'in alt adımları)
+- [x] Talep oluşturma (vatandaş/anonim/personel, create_request RPC)
+- [x] Talep listeleme (Gelen Talepler: müdür biriminin tümü, personel sadece atananı; Taleplerim: herkes kendi oluşturduğu; anonim/vatandaş için access_token ile sorgulama)
+- [x] Talep detay ekranı
+- [x] Talep düzenleme/iptal (açan kişi, SADECE assigned_to boşken; atanmışsa "Talebiniz ilgili birim personeline atanmıştır, şu an talepte değişiklik yapılamaz." uyarısı gösterilmeli)
+- [x] Talep atama ekranı (müdür → personel, assigned_to güncellemesi)
+- [x] Talep çözümleme ekranı (atanan personel, results tablosuna rapor yazma)
+- [x] Onay ekranı (müdür onay/red, red durumunda personele geri dönüş akışı)
+- [x] Basit uygulama içi bildirim ekranı (notifications tablosu zaten var, Flutter tarafı yok — CLAUDE.md'nin kendi tanımına göre MVP'de push değil ama in-app bildirim gerekli)
+
 6. Medya ekleri (foto/video — Supabase Storage)
 7. Bildirimler (push)
 8. Gemini ile talep yorumlama (gelecek aşama)
@@ -198,3 +218,39 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 - **2026-07-13:** Birim danışman hocasıyla istişare sonrası, vatandaş erişimi için hibrit model (hesaplı + anonim kod ile sorgulama) ve personel kaydı için davet kodu tabanlı model tasarım kararı olarak netleşti. Henüz kod olarak uygulanmadı, sıradaki adım olarak planlandı.
 - **2026-07-13:** handle_new_user() trigger'ı, kayıt sırasında invite_code gönderilip gönderilmediğine göre dallanacak şekilde güncellendi: kod varsa personnel_invites tablosundan role/department_id okunup personel profili oluşturuluyor ve kod "kullanıldı" işaretleniyor; kod yoksa eskisi gibi vatandaş profili oluşturuluyor. Dört senaryo (geçerli kod, tekrar kullanım reddi, kodsuz kayıt, veritabanı doğrulamaları) Swagger UI üzerinden test edilip doğrulandı.
 - **2026-07-13:** Admin davet kodu oluşturma ekranı (admin_invite_screen.dart), personel kayıt ekranı (personnel_register_screen.dart) ve giriş ekranının Vatandaş Girişi/Personel Girişi olarak ikiye ayrılması + giriş sonrası rol doğrulaması (login_screen.dart) tamamlandı. Uçtan uca test edildi: admin daveti oluşturma, o davetle personel kaydı, doğru/yanlış giriş türü senaryoları, rol uyuşmazlığında otomatik çıkış ve Türkçe hata mesajı — hepsi doğrulandı.
+- **2026-07-14:** Hibrit vatandaş erişimi (hesaplı + anonim erişim kodu) ve davet kodu tabanlı personel kaydı mimarisinin veritabanı tarafı tamamlandı:
+  - `personnel_invites` tablosu oluşturuldu: `code` (unique, `generate_invite_code()` ile otomatik üretilir), `department_id` (departments'a FK, `on delete cascade`), `role`, `created_by`/`used_by` (users'a FK, `on delete set null`, nullable), `used` (boolean), `created_at`, `used_at`. FK kararlarının gerekçeleri "personnel_invites Foreign Key Kararları" bölümüne eklendi.
+  - `generate_invite_code()` ve `generate_access_token()` fonksiyonları eklendi (karışıklık yaratan karakterler hariç rastgele, insan tarafından okunabilir kod üretimi).
+  - `personnel_invites` üzerinde admin-only RLS politikaları uygulandı (`current_user_role() = 'admin'` kontrolüyle SELECT/INSERT/UPDATE/DELETE).
+  - `requests` tablosuna `access_token` sütunu eklendi (text, NOT NULL, unique, default `generate_access_token()`); `created_by` nullable yapıldı (anonim talepler için); `requester_type` için `in ('vatandas', 'anonim', 'personel')` CHECK constraint eklendi.
+  - `handle_new_user()` trigger fonksiyonu, kayıt sırasında `invite_code` gönderilip gönderilmediğine göre dallanacak şekilde yeniden yazıldı: kod varsa `personnel_invites`'tan `for update` ile satır kilitlenip role/department_id okunuyor ve personel kaydı yapılıyor (kod geçersiz/kullanılmışsa `raise exception` ile tüm kayıt reddediliyor), kod yoksa eskisi gibi `role = 'vatandas'` ile kayıt yapılıyor.
+  - `requests` tablosuna anonim `INSERT` için ek bir RLS politikası eklendi (`to anon with check (created_by is null)`).
+  - `create_request(p_title, p_description, p_category, p_department_id, p_requester_type, p_created_by)` adında `security definer` bir RPC fonksiyonu yazıldı; `auth.uid()` ile `p_created_by`/`p_requester_type` doğrulaması yaparak kimlik sahteciliğini engelliyor, talebi ekleyip `access_token`'ı döndürüyor. Bu, PostgREST'in `.insert().select()` ikili SELECT+INSERT RLS gereksinimini aşmak için `security definer` deseni kullanılarak çözüldü.
+  - `get_request_by_token(p_access_token)` adında `security definer` bir RPC fonksiyonu yazıldı; `requests`+`departments` join edip title/description/category/status/created_at/department_name döndürüyor. Güvenlik sertleştirmesi olarak `requester_type in ('vatandas','anonim')` filtresi eklendi — personel taleplerinin token ile sorgulanamamasını garanti ediyor.
+- **2026-07-14:** Aynı mimarinin Flutter tarafı tamamlandı:
+  - `lib/screens/login_screen.dart` yeniden yazıldı: Vatandaş Girişi / Personel Girişi / Giriş Yapmadan Devam Et seçim ekranı, paylaşılan form widget'ı, giriş sonrası `public.users.role` kontrolü (uyuşmazsa otomatik `signOut` + Türkçe hata).
+  - `lib/screens/register_screen.dart` ve `lib/screens/personnel_register_screen.dart`'a inline hata mesajları eklendi (zaten kayıtlı e-posta, geçersiz/kullanılmış davet kodu — artık genel SnackBar yerine ilgili `TextFormField`'ın altında gösteriliyor).
+  - `lib/screens/admin_invite_screen.dart` (yeni) — admin'in birim+rol seçip davet kodu ürettiği, kopyalanabilir kod gösteren ve geçmiş davetleri listeleyen ekran.
+  - `lib/screens/citizen_guest_menu_screen.dart` (yeni) — "Talep Oluştur" ve "Sonucu Sorgula" menüsü.
+  - `lib/screens/request_create_screen.dart` (yeni) — talep formu; `requester_type`/`created_by` giriş durumuna göre otomatik belirleniyor (giriş yoksa anonim, vatandaşsa vatandas, personelse personel); `create_request` RPC'sini çağırıp dönen `access_token`'ı kullanıcıya kopyalanabilir şekilde gösteriyor.
+  - `lib/screens/query_result_screen.dart` (yeni) — talep kodu girip `get_request_by_token` RPC'sini çağıran, sonucu Türkçe etiketlerle (durum, kategori vb.) gösteren ekran.
+  - `lib/screens/home_screen.dart`, `StatefulWidget`'a çevrilip giriş yapmış herhangi bir kullanıcı (vatandaş VEYA personel) için "Talep Oluştur" butonu gösterilecek şekilde düzeltildi (personelin de kurum-içi arıza/talep açabilmesi gerektiği için).
+- **2026-07-14:** Hibrit vatandaş erişim mimarisi tamamlandı: personnel_invites tablosu + davet kodu üretimi (generate_invite_code), requests.access_token (generate_access_token) ile anonim/vatandaş sorgu takibi, requests.requester_type (vatandas/anonim/personel) ayrımı, handle_new_user() trigger'ının davet koduna göre dallanması.
+- **2026-07-14:** Anonim talep oluşturma sorunu (PostgREST'in insert+select ikili RLS gereksinimi) create_request() security definer RPC fonksiyonuyla çözüldü; kimlik sahteciliğine karşı auth.uid() doğrulamasıyla sertleştirildi.
+- **2026-07-14:** get_request_by_token() RPC'si, requester_type filtresiyle sertleştirildi — personel talepleri artık anonim token sorgusuyla asla görüntülenemiyor.
+- **2026-07-14:** Flutter tarafında tamamlanan ekranlar: login_screen (vatandaş/personel/misafir girişi ayrımı), register_screen ve personnel_register_screen (inline hata mesajları), admin_invite_screen (davet kodu üretimi ve geçmişi), citizen_guest_menu_screen, request_create_screen, query_result_screen, request_list_screen (Gelen Talepler), my_requests_screen (Taleplerim), home_screen (rol bazlı buton görünürlüğü, Çıkış Yap butonu).
+- **2026-07-14:** Güvenlik sertleştirmesi: login_screen'deki rol uyuşmazlığı hata mesajı, hesabın var olup olmadığını/rolünü sızdırmaması için genel bir mesaja indirgendi (register_screen'deki e-posta sızıntısı dersiyle aynı prensip).
+- **2026-07-14:** Önemli mimari ders: RLS bir kullanıcının görebileceği ÜST SINIRI belirler, hangi EKRANIN o sorguyu attığını bilmez. Aynı sorguyu (ek filtresiz) atan iki farklı ekran, aynı kullanıcı için her zaman aynı (RLS'in izin verdiği tam) sonucu döndürür. Bir ekranın RLS'in izin verdiği kümenin sadece bir ALT KÜMESİNİ göstermesi gerekiyorsa (örn. "Taleplerim" sadece kendi oluşturduklarını, "Gelen Talepler" sadece atananı/birimi göstermeli), istemci tarafında ek WHERE filtresi (örn. .eq('created_by', ...) veya .eq('assigned_to', ...)) yazılması ŞART — RLS'e güvenmek tek başına yeterli değil.
+- **2026-07-14:** CLAUDE.md'deki "Şeffaflık" kararından (personel biriminin tüm taleplerini görür) bilinçli olarak sapıldı: personel artık SADECE kendisine atanan talepleri görüyor (assigned_to = auth.uid()), müdür ise atama yapabilmek için biriminin tüm taleplerini görmeye devam ediyor. RLS, "birim_personeli_kendi_talepleri_gorebilir" kuralı kaldırılıp mudur_biriminin_tum_taleplerini_gorebilir / personel_atanan_talepleri_gorebilir / admin_tum_talepleri_gorebilir olarak üçe bölünerek güncellendi.
+- **2026-07-14:** Bilinen eksikler / sıradaki adımlar: talep detay ekranı, talep atama ekranı (müdür → personel, assigned_to güncellemesi), talep çözümleme ekranı (results tablosu), onay ekranı (müdür onay/red); migration dosyasının güncellenmesi; GOTRUE_MAILER_AUTOCONFIRM'in production öncesi kapatılması; git commit+push'un yapılması; get_request_by_token'daki not_found/forbidden mesaj ayrımının bilinçli olarak ertelenmesi.
+- **2026-07-14:** requests tablosu için görünürlük modeli değiştirildi: birim_personeli_kendi_talepleri_gorebilir kuralı kaldırılıp, mudur_biriminin_tum_taleplerini_gorebilir (müdür → biriminin tüm talepleri) ve personel_atanan_talepleri_gorebilir (personel → SADECE assigned_to = kendisi) olarak ikiye ayrıldı; admin_tum_talepleri_gorebilir ayrı bir kural olarak eklendi. Bu, CLAUDE.md'deki eski "şeffaflık" kararından bilinçli bir sapmadır.
+- **2026-07-14:** Test sürecinde önemli bir teşhis vakası yaşandı: müdür test hesabı (mudur1.test@test.com) davet kodu sorunuyla sessizce oluşturulamamıştı (trigger'ın raise exception ile tüm kaydı geri alması); test sırasında bu fark edilmeden hâlâ admin oturumuyla test yapılmış, bu da "müdürün her iki birimi de gördüğü" yanlış izlenimini verdi. SQL ile auth.users + public.users join sorgusuyla hesabın hiç var olmadığı doğrulandı, hesap dikkatlice yeniden oluşturularak çözüldü. Genel ders: bir test beklenmedik sonuç verdiğinde, önce "gerçekten doğru hesapla mı test ediyorum" diye kontrol etmek gerekir.
+- **2026-07-14:** MVP'nin kalan adımları netleştirildi ve önceliklendirildi: (A) birbirine bağımlı, teker teker yapılacak ekranlar — talep detay, düzenleme/iptal, atama, çözümleme, onay, bildirim; (B) bağımsız, A bittikten sonra yapılacak işler — migration dosyası güncelleme, GOTRUE_MAILER_AUTOCONFIRM kapatma (production öncesi), git commit+push. A grubunun tek seferde değil, önceki adımlarda olduğu gibi teker teker ve her birinin ayrı test edilmesi kararlaştırıldı (RLS-istemci filtresi ayrımı ve müdür kaydı vakalarında küçük adımların hataları yakalamadaki değeri kanıtlandığı için).
+- **2026-07-16:** MVP'nin çekirdek fonksiyonel döngüsü tamamlandı: talep oluşturma → listeleme/sorgulama → detay görüntüleme → atama (müdür→personel) → çözümleme (personel raporu) → onay/red (müdür) → red sonrası yeniden düzenleyip gönderme → bildirim (onay/red anında ilgili kişiye uygulama içi bildirim) tüm akış uçtan uca test edildi ve doğrulandı. Ayrıca: results.previously_rejected sütunu + trigger'ı ile "bu rapor daha önce reddedilmişti" bilgisi kalıcı olarak işaretleniyor; requests.status için CHECK kısıtlaması olmadığı için 'iptal' durumu eklendi. Sıradaki adım: migration dosyasının güncellenmesi, GOTRUE_MAILER_AUTOCONFIRM ayarının gözden geçirilmesi, git commit+push.
+- **2026-07-16:** A grubu (MVP çekirdek fonksiyonel döngüsü — talep detay, düzenleme/iptal, atama, çözümleme, onay, bildirim ekranları) resmi olarak tamamlandı kabul edildi; roadmap madde 5 ve MVP tamamlanma kontrol listesindeki 8 madde de zaten ✅. `supabase db diff --schema public` ile şema kontrolü yapıldı: "No schema changes found" — A grubu geliştirmesi sırasında (previously_rejected sütunu, sync trigger'ları dahil) şemada zaten önceki migration'a yansıtılmamış hiçbir fark kalmadığı doğrulandı, yeni migration dosyası oluşturulmadı. GOTRUE_MAILER_AUTOCONFIRM notu ayrı bir "Yapılacaklar / Production Öncesi Kontrol Listesi" bölümüne taşındı. Sıradaki adım: B grubu — Medya ekleri (foto/video, roadmap madde 6) veya push bildirimler (madde 7).
+
+## Yapılacaklar / Production Öncesi Kontrol Listesi
+- [ ] `GOTRUE_MAILER_AUTOCONFIRM=true` (docker-compose.yml / ilgili `.env`) sadece YEREL GELİŞTİRME ayarıdır — e-posta doğrulaması olmadan hesapları otomatik onaylıyor. Production'a geçmeden önce gerçek bir SMTP servisi bağlanıp bu ayar `false` yapılmalı; aksi halde gerçek kullanıcılar e-posta doğrulaması yapmadan hesap açabilir (bkz. 2026-07-13 tarihli İlerleme Günlüğü kayıtları). **Durum (2026-07-16): henüz değiştirilmedi, sadece kayıt altına alındı.**
+
+## Bilinen Eksikler / Sonraki Adımlar
+- `get_request_by_token` fonksiyonunda "kayıt bulunamadı" ile "yetkisiz erişim" (`requester_type = 'personel'` olan bir talebe token ile erişilmeye çalışılması) durumlarını ayrı mesajlarla ayırt etme fikri bilinçli olarak ertelendi. Güvenlik zaten sağlanmış durumda (fonksiyon her iki durumda da boş liste döndürüyor, personel taleplerine token ile erişim mümkün değil); bu yalnızca bir UX inceliği, ileride ele alınabilir.

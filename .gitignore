@@ -13,6 +13,9 @@
 # Environment variables (secrets)
 .env
 
+# Swagger UI icin indirilen Supabase OpenAPI semasi (uretilen dosya, senkron kalmayabilir)
+/swagger/openapi.json
+
 
 
 # Flutter repo-specific
