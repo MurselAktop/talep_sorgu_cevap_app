@@ -881,3 +881,90 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+
+--
+-- Medya ekleri (attachments) — Roadmap madde 6, backend tarafı (2026-07-17).
+-- public.attachments tablosu + RLS bu bölümde; ardından Storage bucket'ı ve
+-- storage.objects RLS politikaları. storage şeması (bucket, objects), auth
+-- şeması gibi Supabase tarafından yönetilir ve pg_dump --schema=public
+-- kapsamının dışındadır; auth.users trigger'ında olduğu gibi elle eklendi
+-- (bu bölüm gerçek bir pg_dump çıktısı değil, elle yazıldı).
+--
+-- Yükleme yolu kuralı: dosyalar Storage'a "{request_id}/{dosya_adı}"
+-- şeklinde yüklenmeli — storage.objects politikaları request_id'yi bu
+-- yoldan (storage.foldername) okuyup ilgili talebin görünürlük/atama
+-- kurallarını uyguluyor.
+--
+
+CREATE TABLE IF NOT EXISTS "public"."attachments" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "file_url" "text" NOT NULL,
+    "media_type" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "attachments_media_type_check" CHECK (("media_type" = ANY (ARRAY['image'::"text", 'video'::"text"])))
+);
+
+
+ALTER TABLE "public"."attachments" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."attachments" IS 'talep foto/video ekleri (Supabase Storage''daki dosyaların meta verisi)';
+
+
+ALTER TABLE ONLY "public"."attachments"
+    ADD CONSTRAINT "attachments_pkey" PRIMARY KEY ("id");
+
+
+ALTER TABLE ONLY "public"."attachments"
+    ADD CONSTRAINT "attachments_request_id_fkey" FOREIGN KEY ("request_id") REFERENCES "public"."requests"("id") ON DELETE CASCADE;
+
+
+ALTER TABLE "public"."attachments" ENABLE ROW LEVEL SECURITY;
+
+
+-- SELECT: ilgili talebi görebilen herkes (açan kişi / müdür / atanan
+-- personel / admin) ekleri de görebilir — results tablosundakiyle aynı
+-- "ilgili talebi görebilen" mantığı.
+CREATE POLICY "ilgili_talebi_gorebilen_ekleri_gorebilir" ON "public"."attachments" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."requests" "r"
+  WHERE (("r"."id" = "attachments"."request_id") AND (("r"."created_by" = "auth"."uid"()) OR (("public"."current_user_role"() = 'mudur'::"text") AND (NOT ("r"."department_id" IS DISTINCT FROM "public"."current_user_department"()))) OR (("public"."current_user_role"() = 'personel'::"text") AND ("r"."assigned_to" = "auth"."uid"())) OR ("public"."current_user_role"() = 'admin'::"text"))))));
+
+
+-- INSERT: talebi açan kişi, atanan personel veya admin ek ekleyebilir.
+CREATE POLICY "acan_kisi_atanan_personel_veya_admin_ek_ekleyebilir" ON "public"."attachments" FOR INSERT WITH CHECK ((EXISTS ( SELECT 1
+   FROM "public"."requests" "r"
+  WHERE (("r"."id" = "attachments"."request_id") AND (("r"."created_by" = "auth"."uid"()) OR ("r"."assigned_to" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text"))))));
+
+
+GRANT ALL ON TABLE "public"."attachments" TO "anon";
+GRANT ALL ON TABLE "public"."attachments" TO "authenticated";
+GRANT ALL ON TABLE "public"."attachments" TO "service_role";
+
+
+--
+-- Storage: request-attachments bucket'ı (private) + storage.objects RLS.
+--
+
+INSERT INTO "storage"."buckets" ("id", "name", "public", "file_size_limit", "allowed_mime_types")
+VALUES (
+  'request-attachments',
+  'request-attachments',
+  false,
+  52428800,
+  ARRAY['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime']
+)
+ON CONFLICT ("id") DO NOTHING;
+
+
+-- SELECT (indirme/görme): ilgili talebi görebilen herkes dosyayı da görebilir.
+CREATE POLICY "ilgili_talebi_gorebilen_dosyayi_gorebilir" ON "storage"."objects" FOR SELECT USING ((("bucket_id" = 'request-attachments'::"text") AND (EXISTS ( SELECT 1
+   FROM "public"."requests" "r"
+  WHERE (("r"."id"::"text" = ("storage"."foldername"("objects"."name"))[1]) AND (("r"."created_by" = "auth"."uid"()) OR (("public"."current_user_role"() = 'mudur'::"text") AND (NOT ("r"."department_id" IS DISTINCT FROM "public"."current_user_department"()))) OR (("public"."current_user_role"() = 'personel'::"text") AND ("r"."assigned_to" = "auth"."uid"())) OR ("public"."current_user_role"() = 'admin'::"text")))))));
+
+
+-- INSERT (yükleme): talebi açan kişi, atanan personel veya admin dosya yükleyebilir.
+CREATE POLICY "acan_kisi_atanan_personel_veya_admin_dosya_yukleyebilir" ON "storage"."objects" FOR INSERT WITH CHECK ((("bucket_id" = 'request-attachments'::"text") AND (EXISTS ( SELECT 1
+   FROM "public"."requests" "r"
+  WHERE (("r"."id"::"text" = ("storage"."foldername"("objects"."name"))[1]) AND (("r"."created_by" = "auth"."uid"()) OR ("r"."assigned_to" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text")))))));
