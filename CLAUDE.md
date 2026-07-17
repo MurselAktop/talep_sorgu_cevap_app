@@ -253,6 +253,8 @@ Aşağıdaki kurallar Supabase Row Level Security politikaları olarak tablo baz
 
 ## Yapılacaklar / Production Öncesi Kontrol Listesi
 - [ ] `GOTRUE_MAILER_AUTOCONFIRM=true` (docker-compose.yml / ilgili `.env`) sadece YEREL GELİŞTİRME ayarıdır — e-posta doğrulaması olmadan hesapları otomatik onaylıyor. Production'a geçmeden önce gerçek bir SMTP servisi bağlanıp bu ayar `false` yapılmalı; aksi halde gerçek kullanıcılar e-posta doğrulaması yapmadan hesap açabilir (bkz. 2026-07-13 tarihli İlerleme Günlüğü kayıtları). **Durum (2026-07-16): henüz değiştirilmedi, sadece kayıt altına alındı.**
+- [ ] Ek (attachment) silme özelliği MVP'de yok, ileride eklenebilir (2026-07-17: `attachments` tablosu/bucket için bilinçli olarak DELETE RLS politikası yazılmadı — admin dahil hiç kimse şu an bir eki silemiyor).
+- [ ] Anonim (access_token ile takip edilen) taleplerde medya eki görüntüleme/yükleme şu an desteklenmiyor — `created_by` null olduğu için RLS eşleşmiyor; ileride token bazlı ayrı bir erişim yolu tasarlanmalı.
 
 ## Bilinen Ortam Notları
 - **Android emülatöründe fiziksel klavye Türkçe karakter sorunu (2026-07-17):** Windows host klavyesinden emülatöre Türkçe karakterler (ş, ı, ğ vb.) doğru iletilmiyor. Bu bir uygulama/kod hatası DEĞİL, saf bir emülatör/host fiziksel klavye eşleme sorunu — doğrulandı çünkü emülatörün kendi dokunmatik ekran klavyesine geçilince Türkçe karakterler sorunsuz giriliyor. **Çözüm:** Emülatörde Türkçe karakter girilmesi gereken testlerde fiziksel klavye yerine emülatörün dokunmatik ekran klavyesini kullanın.
