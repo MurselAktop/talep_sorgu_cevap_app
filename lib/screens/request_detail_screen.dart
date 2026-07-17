@@ -45,11 +45,21 @@ class RequestDetailScreen extends StatefulWidget {
   State<RequestDetailScreen> createState() => _RequestDetailScreenState();
 }
 
+/// Storage'a yüklenirken dosya adının önüne eklenen benzersizlik damgasını
+/// (bkz. request_create_screen.dart — `{timestamp}_{dosyaAdı}`) kullanıcıya
+/// göstermeden önce ayıklar.
+String _originalFileName(String storagePath) {
+  final fileName = storagePath.split('/').last;
+  final match = RegExp(r'^\d+_(.+)$').firstMatch(fileName);
+  return match?.group(1) ?? fileName;
+}
+
 class _RequestDetailScreenState extends State<RequestDetailScreen> {
   static SupabaseClient get _client => SupabaseService.client;
 
   Map<String, dynamic>? _request;
   Map<String, dynamic>? _result;
+  List<Map<String, dynamic>> _attachments = [];
   bool _isLoading = true;
   String? _role;
   bool _isLoadingPersonnel = false;
@@ -79,6 +89,7 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
         _request = Map<String, dynamic>.from(requestResponse);
         _result = resultResponse == null ? null : Map<String, dynamic>.from(resultResponse);
       });
+      await _loadAttachments();
     } on PostgrestException {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -92,6 +103,57 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  /// Eklerin listelenmesi, talebin geri kalanının görüntülenmesi için kritik
+  /// olmadığından hata durumunda sessizce yutulur (yalnızca ek şeridi boş
+  /// kalır) — `_loadCurrentUserRole`'daki gerekçeyle aynı.
+  Future<void> _loadAttachments() async {
+    try {
+      final response = await _client
+          .from('attachments')
+          .select('id, file_url, media_type')
+          .eq('request_id', widget.requestId)
+          .order('created_at');
+      final attachments = List<Map<String, dynamic>>.from(response);
+
+      await Future.wait(
+        attachments.map((attachment) async {
+          try {
+            attachment['signed_url'] = await _client.storage
+                .from('request-attachments')
+                .createSignedUrl(attachment['file_url'] as String, 3600);
+          } catch (_) {
+            // İmzalı URL alınamazsa o ek için sadece önizleme gösterilmez,
+            // dosya adı/ikon yine de listede kalır.
+          }
+        }),
+      );
+
+      if (mounted) setState(() => _attachments = attachments);
+    } catch (_) {
+      // Yukarıdaki dokümantasyona bakın.
+    }
+  }
+
+  void _showImagePreview(String signedUrl) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            InteractiveViewer(child: Image.network(signedUrl)),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Rol bilgisi yalnızca "Ata" butonunun görünürlüğünü belirlediği için,
@@ -473,6 +535,70 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
     );
   }
 
+  Widget _buildAttachmentsCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Ekler:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 90,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _attachments.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final attachment = _attachments[index];
+                  final mediaType = attachment['media_type'] as String? ?? '';
+                  final signedUrl = attachment['signed_url'] as String?;
+                  final fileName = _originalFileName(attachment['file_url'] as String);
+                  final isImage = mediaType == 'image' && signedUrl != null;
+
+                  return GestureDetector(
+                    onTap: isImage ? () => _showImagePreview(signedUrl) : null,
+                    child: Container(
+                      width: 90,
+                      height: 90,
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      ),
+                      child: isImage
+                          ? Image.network(signedUrl, fit: BoxFit.cover)
+                          : Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    mediaType == 'video' ? Icons.videocam : Icons.insert_drive_file,
+                                    size: 28,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    fileName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.labelSmall,
+                                  ),
+                                ],
+                              ),
+                            ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildResultCard(Map<String, dynamic> result) {
     final approvalStatus = result['approval_status'] as String? ?? '';
     final previouslyRejected = result['previously_rejected'] as bool? ?? false;
@@ -543,6 +669,10 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       _buildDetailCard(request),
+                      if (_attachments.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        _buildAttachmentsCard(),
+                      ],
                       if (result != null) ...[
                         const SizedBox(height: 16),
                         _buildResultCard(result),

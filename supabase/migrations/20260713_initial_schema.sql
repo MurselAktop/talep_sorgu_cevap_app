@@ -48,11 +48,12 @@ COMMENT ON SCHEMA "public" IS 'standard public schema';
 
 
 
-CREATE OR REPLACE FUNCTION "public"."create_request"("p_title" "text", "p_description" "text", "p_category" "text", "p_department_id" bigint, "p_requester_type" "text", "p_created_by" "uuid") RETURNS "text"
+CREATE OR REPLACE FUNCTION "public"."create_request"("p_title" "text", "p_description" "text", "p_category" "text", "p_department_id" bigint, "p_requester_type" "text", "p_created_by" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
 declare
+  v_id uuid;
   v_access_token text;
   v_actual_uid uuid := auth.uid();
   v_actual_role text;
@@ -76,9 +77,13 @@ begin
 
   insert into requests (title, description, category, department_id, requester_type, created_by)
   values (p_title, p_description, p_category, p_department_id, p_requester_type, p_created_by)
-  returning access_token into v_access_token;
+  returning id, access_token into v_id, v_access_token;
 
-  return v_access_token;
+  -- Medya ekleri Storage'a "{request_id}/..." yoluna yüklendiği için Flutter
+  -- tarafının talebin id'sine de ihtiyacı var; bu yüzden dönüş tipi
+  -- access_token (text) yerine {id, access_token} içeren jsonb'ye çevrildi
+  -- (2026-07-17, roadmap madde 6 — medya ekleri, adım 3).
+  return jsonb_build_object('id', v_id, 'access_token', v_access_token);
 end;
 $$;
 
@@ -903,14 +908,14 @@ CREATE TABLE IF NOT EXISTS "public"."attachments" (
     "file_url" "text" NOT NULL,
     "media_type" "text" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "attachments_media_type_check" CHECK (("media_type" = ANY (ARRAY['image'::"text", 'video'::"text"])))
+    CONSTRAINT "attachments_media_type_check" CHECK (("media_type" = ANY (ARRAY['image'::"text", 'video'::"text", 'document'::"text"])))
 );
 
 
 ALTER TABLE "public"."attachments" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."attachments" IS 'talep foto/video ekleri (Supabase Storage''daki dosyaların meta verisi)';
+COMMENT ON TABLE "public"."attachments" IS 'talep foto/video/belge ekleri (Supabase Storage''daki dosyaların meta verisi)';
 
 
 ALTER TABLE ONLY "public"."attachments"
@@ -953,7 +958,7 @@ VALUES (
   'request-attachments',
   false,
   52428800,
-  ARRAY['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime']
+  ARRAY['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
 )
 ON CONFLICT ("id") DO NOTHING;
 
