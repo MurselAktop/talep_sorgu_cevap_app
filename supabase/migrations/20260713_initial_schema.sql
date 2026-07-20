@@ -973,3 +973,213 @@ CREATE POLICY "ilgili_talebi_gorebilen_dosyayi_gorebilir" ON "storage"."objects"
 CREATE POLICY "acan_kisi_atanan_personel_veya_admin_dosya_yukleyebilir" ON "storage"."objects" FOR INSERT WITH CHECK ((("bucket_id" = 'request-attachments'::"text") AND (EXISTS ( SELECT 1
    FROM "public"."requests" "r"
   WHERE (("r"."id"::"text" = ("storage"."foldername"("objects"."name"))[1]) AND (("r"."created_by" = "auth"."uid"()) OR ("r"."assigned_to" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text")))))));
+
+
+--
+-- Genişletme Faz 1 — Veri modeli + kayıt ekranı genişletmesi (2026-07-20).
+-- users tablosuna phone/il/ilce eklendi; tc_no ayrı bir users_private
+-- tablosuna kondu. Sebep: RLS satır bazlıdır, sütun gizleyemez — müdür,
+-- birim personelinin users satırını görebildiği için tc_no aynı tabloda
+-- olsaydı müdür de görürdü. Karar (2026-07-20): tc_no'yu SADECE kullanıcının
+-- kendisi + admin görebilir. KVKK onay alanı (kvkk_accepted_at) bilinçli
+-- olarak Faz 1 kapsamından çıkarıldı; production öncesi eklenecek.
+-- (Bu bölüm elle yazıldı, pg_dump çıktısı değildir.)
+--
+
+ALTER TABLE "public"."users"
+    ADD COLUMN IF NOT EXISTS "phone" "text",
+    ADD COLUMN IF NOT EXISTS "il" "text",
+    ADD COLUMN IF NOT EXISTS "ilce" "text";
+
+-- Sütunlar bilinçli olarak NULLABLE: mevcut hesaplarda bu bilgiler yok.
+-- Yeni kayıtlar için zorunluluk handle_new_user() trigger'ında ve Flutter
+-- formunda uygulanıyor.
+
+CREATE TABLE IF NOT EXISTS "public"."users_private" (
+    "user_id" "uuid" NOT NULL,
+    "tc_no" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "users_private_pkey" PRIMARY KEY ("user_id"),
+    CONSTRAINT "users_private_tc_no_key" UNIQUE ("tc_no"),
+    CONSTRAINT "users_private_tc_no_format" CHECK (("tc_no" ~ '^[1-9][0-9]{10}$'))
+);
+
+
+ALTER TABLE "public"."users_private" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."users_private" IS 'hassas kimlik bilgileri (tc_no) — RLS: sadece kullanıcının kendisi + admin okuyabilir';
+
+
+ALTER TABLE ONLY "public"."users_private"
+    ADD CONSTRAINT "users_private_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+
+ALTER TABLE "public"."users_private" ENABLE ROW LEVEL SECURITY;
+
+
+-- SELECT: sadece kullanıcının kendisi + admin.
+CREATE POLICY "kendi_tc_bilgisini_gorebilir" ON "public"."users_private" FOR SELECT USING (("user_id" = "auth"."uid"()));
+
+
+CREATE POLICY "admin_tc_bilgilerini_gorebilir" ON "public"."users_private" FOR SELECT USING (("public"."current_user_role"() = 'admin'::"text"));
+
+
+-- BİLİNÇLİ: INSERT/UPDATE/DELETE politikası YOK. Satırı yalnızca
+-- handle_new_user() (security definer, RLS'i aşar) ekler; T.C. kimlik no
+-- sonradan değişmeyeceği için uygulama üzerinden kimse (admin dahil)
+-- güncelleyemez/silemez. Düzeltme gerekirse doğrudan SQL ile yapılır.
+
+GRANT ALL ON TABLE "public"."users_private" TO "anon";
+GRANT ALL ON TABLE "public"."users_private" TO "authenticated";
+GRANT ALL ON TABLE "public"."users_private" TO "service_role";
+
+
+-- handle_new_user(): Faz 1 için genişletildi — tc_no/phone/il/ilce metadata
+-- alanları YENİ kayıtlar için zorunlu; phone/il/ilce public.users'a, tc_no
+-- public.users_private'a yazılıyor. İki tabloya yazım aynı trigger içinde
+-- olduğu için atomik: users_private insert'i başarısız olursa tüm kayıt
+-- (auth.users satırı dahil) geri alınır, yarım profil kalmaz.
+CREATE OR REPLACE FUNCTION "public"."handle_new_user"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_invite_code text;
+  v_invite record;
+  v_tc_no text;
+  v_phone text;
+  v_il text;
+  v_ilce text;
+begin
+  v_invite_code := new.raw_user_meta_data ->> 'invite_code';
+  v_tc_no := nullif(trim(new.raw_user_meta_data ->> 'tc_no'), '');
+  v_phone := nullif(trim(new.raw_user_meta_data ->> 'phone'), '');
+  v_il    := nullif(trim(new.raw_user_meta_data ->> 'il'), '');
+  v_ilce  := nullif(trim(new.raw_user_meta_data ->> 'ilce'), '');
+
+  -- Zorunluluk kontrolü trigger'da da var ki Flutter formunu atlayıp
+  -- doğrudan Auth API'ye istek atan biri eksik profille hesap açamasın.
+  if v_tc_no is null or v_phone is null or v_il is null or v_ilce is null then
+    raise exception 'Kayıt için T.C. kimlik no, telefon, il ve ilçe zorunludur.';
+  end if;
+
+  if v_invite_code is not null then
+    -- Personel kaydı: davet kodunu doğrula
+    select * into v_invite
+    from public.personnel_invites
+    where code = v_invite_code
+      and used = false
+    for update;
+
+    if not found then
+      raise exception 'Geçersiz veya kullanılmış davet kodu.';
+    end if;
+
+    insert into public.users (id, email, full_name, role, department_id, phone, il, ilce)
+    values (
+      new.id,
+      new.email,
+      new.raw_user_meta_data ->> 'full_name',
+      v_invite.role,
+      v_invite.department_id,
+      v_phone,
+      v_il,
+      v_ilce
+    );
+
+    update public.personnel_invites
+    set used = true,
+        used_by = new.id,
+        used_at = now()
+    where code = v_invite_code;
+
+  else
+    -- Vatandaş kaydı
+    insert into public.users (id, email, full_name, role, department_id, phone, il, ilce)
+    values (
+      new.id,
+      new.email,
+      new.raw_user_meta_data ->> 'full_name',
+      'vatandas',
+      null,
+      v_phone,
+      v_il,
+      v_ilce
+    );
+  end if;
+
+  -- tc_no ayrı, kısıtlı erişimli tabloya. UNIQUE/CHECK ihlallerini Türkçe
+  -- mesaja çeviriyoruz ki Flutter tarafı inline alan hatası gösterebilsin.
+  begin
+    insert into public.users_private (user_id, tc_no)
+    values (new.id, v_tc_no);
+  exception
+    when unique_violation then
+      raise exception 'Bu T.C. kimlik numarası ile zaten bir hesap mevcut.';
+    when check_violation then
+      raise exception 'Geçersiz T.C. kimlik numarası formatı.';
+  end;
+
+  return new;
+end;
+$$;
+
+
+
+--
+-- check_registration_availability — 2026-07-20, kayıt öncesi doğrulama RPC'si.
+--
+-- KÖK NEDEN: GoTrue'nun (gotrue Dart paketi) her /signup isteğine otomatik
+-- eklediği "X-Supabase-Api-Version: 2024-01-01" header'ı, sunucudaki GoTrue'yu
+-- handle_new_user() trigger'ından gelen HER türlü özel Postgres hatasını
+-- (tc_no format/çakışma, eksik alan, geçersiz davet kodu — hepsi) generic bir
+-- mesaja sarmalamaya zorluyor: {"code":"unexpected_failure","message":
+-- "Database error saving new user"}. Bu, gotrue paketi seviyesinde sabit bir
+-- davranış; bizim tarafımızdan kapatılamaz veya bypass edilemez.
+--
+-- ÇÖZÜM: Bu kontroller artık signUp()'tan ÖNCE, ayrı bir RPC ile yapılıyor.
+-- RPC çağrıları Postgrest üzerinden gider (GoTrue'nun /signup sanitizasyonuna
+-- hiç girmez), bu yüzden gerçek Türkçe hata mesajı PostgrestException.message
+-- olarak sorunsuz döner. handle_new_user() trigger'ındaki kontroller AYNEN
+-- KALIYOR — nihai güvenlik ağı (bir yarış durumunda bu RPC geçse bile trigger
+-- yine reddeder, o nadir durumda kullanıcı generic mesaj görür ama veri
+-- bütünlüğü bozulmaz).
+--
+
+CREATE OR REPLACE FUNCTION "public"."check_registration_availability"("p_tc_no" "text", "p_invite_code" "text" DEFAULT NULL) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_invite record;
+begin
+  if p_tc_no !~ '^[1-9][0-9]{10}$' then
+    raise exception 'Geçersiz T.C. kimlik numarası formatı.';
+  end if;
+
+  if exists (select 1 from public.users_private where tc_no = p_tc_no) then
+    raise exception 'Bu T.C. kimlik numarası ile zaten bir hesap mevcut.';
+  end if;
+
+  if p_invite_code is not null then
+    select * into v_invite
+    from public.personnel_invites
+    where code = p_invite_code
+      and used = false;
+
+    if not found then
+      raise exception 'Geçersiz veya kullanılmış davet kodu.';
+    end if;
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."check_registration_availability"("p_tc_no" "text", "p_invite_code" "text") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."check_registration_availability"("p_tc_no" "text", "p_invite_code" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."check_registration_availability"("p_tc_no" "text", "p_invite_code" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."check_registration_availability"("p_tc_no" "text", "p_invite_code" "text") TO "service_role";
+
