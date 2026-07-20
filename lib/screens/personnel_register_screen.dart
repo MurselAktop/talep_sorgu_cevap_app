@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../constants/turkiye_iller.dart';
 import '../services/auth_service.dart';
+import '../utils/validators.dart';
 
 /// Personel/müdür/admin kaydı ekranı. Vatandaş kaydından (register_screen.dart)
 /// tamamen ayrı, bağımsız bir ekrandır — kendi kendine kayıt yerine, admin'in
@@ -13,24 +17,37 @@ class PersonnelRegisterScreen extends StatefulWidget {
   const PersonnelRegisterScreen({super.key});
 
   @override
-  State<PersonnelRegisterScreen> createState() => _PersonnelRegisterScreenState();
+  State<PersonnelRegisterScreen> createState() =>
+      _PersonnelRegisterScreenState();
 }
 
 class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
   static final _emailRegex = RegExp(r'^[\w.+-]+@[\w-]+\.[\w.-]+$');
 
+  // Ağ isteği hiç cevap vermezse butonun sonsuza kadar dönmemesi için (bkz.
+  // register_screen.dart'taki aynı sabit/gerekçe).
+  static const _networkTimeout = Duration(seconds: 15);
+
   final _formKey = GlobalKey<FormState>();
   final _fullNameController = TextEditingController();
+  final _tcNoController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _ilceController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _inviteCodeController = TextEditingController();
+  String? _selectedIl;
   bool _isLoading = false;
   String? _emailErrorText;
+  String? _tcNoErrorText;
   String? _inviteCodeErrorText;
 
   @override
   void dispose() {
     _fullNameController.dispose();
+    _tcNoController.dispose();
+    _phoneController.dispose();
+    _ilceController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _inviteCodeController.dispose();
@@ -40,52 +57,80 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
   Future<void> _submit() async {
     setState(() {
       _emailErrorText = null;
+      _tcNoErrorText = null;
       _inviteCodeErrorText = null;
     });
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
     try {
+      // Bkz. AuthService.checkRegistrationAvailability dokümantasyonu:
+      // handle_new_user() trigger'ının hata mesajı GoTrue tarafından
+      // sansürlendiği için, tc_no VE davet kodu doğrulaması signUp()'tan
+      // ÖNCE, ayrı bir RPC ile yapılıyor — buradan dönen hata mesajı
+      // güvenilir.
+      final inviteCode = _inviteCodeController.text.trim().toUpperCase();
+      await AuthService.checkRegistrationAvailability(
+        tcNo: _tcNoController.text.trim(),
+        inviteCode: inviteCode,
+      ).timeout(_networkTimeout);
+
       await AuthService.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         fullName: _fullNameController.text.trim(),
-        inviteCode: _inviteCodeController.text.trim().toUpperCase(),
-      );
+        tcNo: _tcNoController.text.trim(),
+        phone: Validators.normalizePhone(_phoneController.text),
+        il: _selectedIl!,
+        ilce: _ilceController.text.trim(),
+        inviteCode: inviteCode,
+      ).timeout(_networkTimeout);
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Kaydınız başarıyla oluşturuldu.')),
       );
+    } on PostgrestException catch (e) {
+      // check_registration_availability'nin fırlattığı hata — mesaj
+      // içeriğine göre hangi alana ait olduğu belirlenir (RPC sırasıyla
+      // format, tc_no benzersizliği, sonra davet kodunu kontrol ediyor).
+      if (!mounted) return;
+      if (e.message.contains('davet')) {
+        setState(() => _inviteCodeErrorText = e.message);
+      } else {
+        setState(() => _tcNoErrorText = e.message);
+      }
     } on AuthException catch (e) {
       if (!mounted) return;
-      if (_isInviteCodeError(e.message)) {
-        setState(() => _inviteCodeErrorText =
-            'Bu davet kodu daha önce kullanılmış veya geçersiz. Lütfen yöneticinizle iletişime geçin.');
-      } else if (e.message.toLowerCase().contains('already registered')) {
-        setState(() => _emailErrorText =
-            'Bu e-posta adresi sistemde zaten kayıtlı. Lütfen giriş yapın.');
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_describeAuthError(e))),
+      if (e.message.toLowerCase().contains('already registered')) {
+        setState(
+          () => _emailErrorText =
+              'Bu e-posta adresi sistemde zaten kayıtlı. Lütfen giriş yapın.',
         );
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_describeAuthError(e))));
       }
+    } on TimeoutException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Bağlantı zaman aşımına uğradı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.',
+          ),
+        ),
+      );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Bir hata oluştu, lütfen tekrar deneyin.')),
+        const SnackBar(
+          content: Text('Bir hata oluştu, lütfen tekrar deneyin.'),
+        ),
       );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  // Davet kodu hatası, handle_new_user() trigger'ının Postgres exception'ı
-  // GoTrue tarafından sarmalanarak AuthException.message içine düşüyor; bu
-  // yüzden hem tam mesaja hem de "davet" geçen genel bir eşleşmeye bakıyoruz.
-  bool _isInviteCodeError(String message) {
-    return message == 'Geçersiz veya kullanılmış davet kodu.' ||
-        message.toLowerCase().contains('davet');
   }
 
   // Supabase (GoTrue) hatalarını kısa Türkçe mesajlara çeviriyoruz. Davet kodu
@@ -107,71 +152,122 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Personel Kaydı')),
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextFormField(
-                    controller: _fullNameController,
-                    decoration: const InputDecoration(labelText: 'Ad Soyad'),
-                    validator: (value) =>
-                        (value == null || value.trim().isEmpty) ? 'Ad soyad girin' : null,
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: InputDecoration(
-                      labelText: 'E-posta',
-                      errorText: _emailErrorText,
+        // Form Faz 1 alanlarıyla uzadığı için küçük ekranlarda klavye
+        // açıkken taşmasın diye kaydırılabilir yapıldı.
+        child: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: _fullNameController,
+                      decoration: const InputDecoration(labelText: 'Ad Soyad'),
+                      validator: (value) =>
+                          (value == null || value.trim().isEmpty)
+                          ? 'Ad soyad girin'
+                          : null,
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) return 'E-posta girin';
-                      if (!_emailRegex.hasMatch(value.trim())) {
-                        return 'Geçerli bir e-posta adresi girin';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _passwordController,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'Şifre'),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) return 'Şifre girin';
-                      if (value.length < 6) return 'Şifre en az 6 karakter olmalı';
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _inviteCodeController,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: InputDecoration(
-                      labelText: 'Davet Kodu',
-                      errorText: _inviteCodeErrorText,
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _tcNoController,
+                      keyboardType: TextInputType.number,
+                      maxLength: 11,
+                      decoration: InputDecoration(
+                        labelText: 'T.C. Kimlik No',
+                        counterText: '',
+                        errorText: _tcNoErrorText,
+                      ),
+                      validator: Validators.tcNo,
                     ),
-                    validator: (value) =>
-                        (value == null || value.trim().isEmpty) ? 'Davet kodu girin' : null,
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: _isLoading ? null : _submit,
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Kayıt Ol'),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _phoneController,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'Telefon',
+                        hintText: '05XX XXX XX XX',
+                      ),
+                      validator: Validators.phone,
+                    ),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      initialValue: _selectedIl,
+                      decoration: const InputDecoration(labelText: 'İl'),
+                      items: [
+                        for (final il in turkiyeIlleri)
+                          DropdownMenuItem(value: il, child: Text(il)),
+                      ],
+                      onChanged: (value) => setState(() => _selectedIl = value),
+                      validator: (value) => value == null ? 'İl seçin' : null,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _ilceController,
+                      decoration: const InputDecoration(labelText: 'İlçe'),
+                      validator: (value) =>
+                          Validators.requiredField(value, 'İlçe girin'),
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: InputDecoration(
+                        labelText: 'E-posta',
+                        errorText: _emailErrorText,
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty)
+                          return 'E-posta girin';
+                        if (!_emailRegex.hasMatch(value.trim())) {
+                          return 'Geçerli bir e-posta adresi girin';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: 'Şifre'),
+                      validator: (value) {
+                        if (value == null || value.isEmpty)
+                          return 'Şifre girin';
+                        if (value.length < 6)
+                          return 'Şifre en az 6 karakter olmalı';
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _inviteCodeController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: InputDecoration(
+                        labelText: 'Davet Kodu',
+                        errorText: _inviteCodeErrorText,
+                      ),
+                      validator: (value) =>
+                          (value == null || value.trim().isEmpty)
+                          ? 'Davet kodu girin'
+                          : null,
+                    ),
+                    const SizedBox(height: 24),
+                    FilledButton(
+                      onPressed: _isLoading ? null : _submit,
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Kayıt Ol'),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
