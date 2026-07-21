@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import 'admin_department_screen.dart';
 import 'admin_invite_screen.dart';
+import 'admin_users_screen.dart';
 import 'login_screen.dart';
 import 'my_requests_screen.dart';
 import 'notifications_screen.dart';
@@ -50,9 +52,28 @@ class _HomePageState extends State<HomePage> {
     try {
       final profile = await SupabaseService.client
           .from('users')
-          .select('role, full_name')
+          .select('role, full_name, is_active')
           .eq('id', userId)
           .single();
+
+      // Faz 4 (2026-07-21): halihazırda açık bir oturum, hesap admin
+      // tarafından pasifleştirildikten SONRA da devam edebiliyor (AuthGate
+      // sadece oturum var mı bakıyor, public.users'a hiç bakmıyor) — bu
+      // kontrol, bir sonraki ana ekran yüklemesinde temiz bir mesajla
+      // yakalar. Gerçek güvenlik sınırı yine RLS/RPC katmanında.
+      if (profile['is_active'] == false) {
+        await SupabaseService.client.auth.signOut();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Hesabınız pasifleştirilmiş. Lütfen yönetici ile iletişime geçin.')),
+        );
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (route) => false,
+        );
+        return;
+      }
+
       final role = profile['role'] as String;
       if (mounted) {
         setState(() {
@@ -195,6 +216,20 @@ class _HomePageState extends State<HomePage> {
                   MaterialPageRoute(builder: (_) => const AdminInviteScreen()),
                 ),
                 child: const Text('Davet Kodu Oluştur'),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.tonal(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AdminDepartmentScreen()),
+                ),
+                child: const Text('Birim Yönetimi'),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.tonal(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+                ),
+                child: const Text('Kullanıcı Yönetimi'),
               ),
             ],
           ],

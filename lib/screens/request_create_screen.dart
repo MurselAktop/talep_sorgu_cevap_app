@@ -76,7 +76,11 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
 
   Future<void> _loadDepartments() async {
     try {
-      final response = await _client.from('departments').select('id, name').order('name');
+      final response = await _client
+          .from('departments')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name');
       setState(() => _departments = List<Map<String, dynamic>>.from(response));
     } catch (_) {
       if (!mounted) return;
