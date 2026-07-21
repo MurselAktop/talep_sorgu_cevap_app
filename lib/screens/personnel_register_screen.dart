@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../constants/turkiye_iller.dart';
 import '../services/auth_service.dart';
+import '../utils/phone_input_formatter.dart';
 import '../utils/validators.dart';
 
 /// Personel/müdür/admin kaydı ekranı. Vatandaş kaydından (register_screen.dart)
@@ -188,9 +189,10 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
                     TextFormField(
                       controller: _phoneController,
                       keyboardType: TextInputType.phone,
+                      inputFormatters: [PhoneInputFormatter()],
                       decoration: const InputDecoration(
                         labelText: 'Telefon',
-                        hintText: '05XX XXX XX XX',
+                        hintText: '+90 (5XX) XXX XX XX',
                       ),
                       validator: Validators.phone,
                     ),

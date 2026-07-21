@@ -6,6 +6,7 @@ import 'admin_invite_screen.dart';
 import 'login_screen.dart';
 import 'my_requests_screen.dart';
 import 'notifications_screen.dart';
+import 'profile_screen.dart';
 import 'request_create_screen.dart';
 import 'request_list_screen.dart';
 
@@ -108,6 +109,14 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('TŞYS — Talep ve Şikâyet Yönetim Sistemi'),
         actions: [
+          if (isLoggedIn)
+            IconButton(
+              icon: const Icon(Icons.person),
+              tooltip: 'Profilim',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              ),
+            ),
           if (isLoggedIn)
             IconButton(
               icon: Badge(

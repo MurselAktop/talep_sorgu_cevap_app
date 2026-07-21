@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/auth_service.dart';
 import '../services/supabase_service.dart';
 import 'citizen_guest_menu_screen.dart';
+import 'forgot_password_screen.dart';
 import 'home_screen.dart';
 import 'personnel_register_screen.dart';
 import 'register_screen.dart';
@@ -211,7 +212,20 @@ class _LoginScreenState extends State<LoginScreen> {
                 validator: (value) =>
                     (value == null || value.isEmpty) ? 'Şifre girin' : null,
               ),
-              const SizedBox(height: 24),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _isLoading
+                      ? null
+                      : () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const ForgotPasswordScreen(),
+                            ),
+                          ),
+                  child: const Text('Şifremi unuttum'),
+                ),
+              ),
+              const SizedBox(height: 8),
               FilledButton(
                 onPressed: _isLoading ? null : _submit,
                 child: _isLoading
