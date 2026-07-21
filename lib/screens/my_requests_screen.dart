@@ -1,18 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/request_filters.dart';
 import 'request_detail_screen.dart';
-
-/// `requests.status` ham değerlerinin Türkçe karşılıkları (bkz. CLAUDE.md —
-/// Talep durum akışı).
-const Map<String, String> _statusLabels = {
-  'acik': 'Açık',
-  'cozuldu': 'Çözüldü (Onay Bekliyor)',
-  'onaylandi': 'Onaylandı',
-  'reddedildi': 'Reddedildi',
-  'iptal': 'İptal Edildi',
-};
 
 /// `requests.requester_type` ham değerlerinin Türkçe karşılıkları.
 const Map<String, String> _requesterTypeLabels = {
@@ -41,6 +34,9 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
 
   List<Map<String, dynamic>> _requests = [];
   bool _isLoading = true;
+  RequestFilters _filters = RequestFilters.empty();
+  final _searchController = TextEditingController();
+  Timer? _searchDebounce;
 
   @override
   void initState() {
@@ -48,13 +44,23 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
     _loadRequests();
   }
 
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadRequests() async {
     try {
-      final response = await _client
+      var query = _client
           .from('requests')
           .select('*, departments(name)')
-          .eq('created_by', _client.auth.currentUser!.id)
-          .order('created_at', ascending: false);
+          .eq('created_by', _client.auth.currentUser!.id);
+      // Faz 3: arama/filtreler de aynı ekran-daraltma prensibiyle,
+      // created_by filtresinden SONRA order()'dan ÖNCE ekleniyor (server-side).
+      query = _filters.applyTo(query);
+      final response = await query.order('created_at', ascending: false);
       setState(() => _requests = List<Map<String, dynamic>>.from(response));
     } on PostgrestException {
       if (!mounted) return;
@@ -69,6 +75,31 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      setState(() {
+        _filters = _filters.copyWith(searchText: value);
+        _isLoading = true;
+      });
+      _loadRequests();
+    });
+  }
+
+  Future<void> _openFilterSheet() async {
+    final result = await showModalBottomSheet<RequestFilters>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => RequestFilterSheet(initialFilters: _filters),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _filters = result;
+      _isLoading = true;
+    });
+    _loadRequests();
   }
 
   Widget _buildRequestCard(Map<String, dynamic> request) {
@@ -86,7 +117,7 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
           children: [
             Text('Kategori: ${request['category'] as String? ?? ''}'),
             Text('Talep Sahibi: ${_requesterTypeLabels[requesterType] ?? requesterType}'),
-            Text('Durum: ${_statusLabels[status] ?? status}'),
+            Text('Durum: ${statusLabels[status] ?? status}'),
             Text('Birim: ${department?['name'] as String? ?? ''}'),
             Text('Oluşturulma: ${request['created_at']?.toString() ?? ''}'),
             Padding(
@@ -126,23 +157,61 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
         title: const Text('Taleplerim'),
         actions: [
           IconButton(
+            icon: Badge(
+              isLabelVisible: _filters.isActive,
+              child: const Icon(Icons.tune),
+            ),
+            tooltip: 'Filtrele',
+            onPressed: _openFilterSheet,
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Yenile',
             onPressed: _loadRequests,
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _requests.isEmpty
-              ? const Center(child: Text('Görüntülenecek talep bulunamadı.'))
-              : RefreshIndicator(
-                  onRefresh: _loadRequests,
-                  child: ListView.builder(
-                    itemCount: _requests.length,
-                    itemBuilder: (context, index) => _buildRequestCard(_requests[index]),
-                  ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Başlık veya açıklamada ara...',
+                isDense: true,
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.clear),
+                  tooltip: 'Aramayı temizle',
+                  onPressed: () {
+                    _searchController.clear();
+                    _onSearchChanged('');
+                  },
                 ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              onChanged: _onSearchChanged,
+            ),
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _requests.isEmpty
+                    ? const Center(child: Text('Görüntülenecek talep bulunamadı.'))
+                    : RefreshIndicator(
+                        onRefresh: _loadRequests,
+                        child: ListView.builder(
+                          itemCount: _requests.length,
+                          itemBuilder: (context, index) =>
+                              _buildRequestCard(_requests[index]),
+                        ),
+                      ),
+          ),
+        ],
+      ),
     );
   }
 }
