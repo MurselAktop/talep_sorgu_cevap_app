@@ -80,4 +80,25 @@ class AuthService {
   }) {
     return _client.auth.signInWithPassword(email: email, password: password);
   }
+
+  /// Giriş yapmış kullanıcının şifresini değiştirir. Çağıran ekran, bunu
+  /// çağırmadan önce mevcut şifreyi `signInWithPassword` ile yeniden
+  /// doğrulamalıdır — oturumu ele geçiren birinin eski şifreyi bilmeden
+  /// şifre değiştirememesi için (bkz. change_password_screen.dart).
+  static Future<UserResponse> updatePassword(String newPassword) {
+    return _client.auth.updateUser(UserAttributes(password: newPassword));
+  }
+
+  /// Şifremi unuttum akışı: Supabase'in yerleşik e-posta ile şifre sıfırlama
+  /// linkini gönderir. Gönderilen e-posta hem bir link hem 6 haneli bir kod
+  /// içerir; link bu projede bilinçli olarak kullanılmıyor (uygulamanın hiç
+  /// açılmadığı SITE_URL'e yönlendiriyor — bkz. CLAUDE.md "link neden
+  /// kullanılmıyor" notu). Kullanıcı bunun yerine 6 haneli kodu
+  /// `reset_password_screen.dart`'a girer, orası `auth.verifyOTP` ile
+  /// doğrulayıp bu servisteki `updatePassword`'ü çağırır. Yerel
+  /// geliştirmede gönderilen e-postayı görmek için Inbucket
+  /// (http://localhost:9000) kullanılır.
+  static Future<void> resetPasswordForEmail(String email) {
+    return _client.auth.resetPasswordForEmail(email);
+  }
 }

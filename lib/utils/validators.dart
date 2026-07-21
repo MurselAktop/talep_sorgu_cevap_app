@@ -1,3 +1,5 @@
+import 'phone_input_formatter.dart';
+
 /// Kayıt formlarında (vatandaş + personel) ortak kullanılan alan
 /// doğrulayıcıları. Faz 1 kararı gereği tc_no/telefon/il/ilçe tüm kayıt
 /// ekranlarında zorunludur; zorunluluk ayrıca veritabanında
@@ -26,22 +28,30 @@ class Validators {
     return null;
   }
 
-  /// Telefon doğrulaması: boşluklar yok sayılır, "05XXXXXXXXX" (11 hane)
-  /// veya "5XXXXXXXXX" (10 hane) kabul edilir.
+  /// Telefon doğrulaması: PhoneInputFormatter'ın ürettiği maskeli metni
+  /// (veya ham rakamları) kabul eder, 10 haneli yerel numaranın "5" ile
+  /// başlayıp başlamadığını kontrol eder.
   static String? phone(String? value) {
-    final v = (value ?? '').replaceAll(RegExp(r'[\s()-]'), '');
-    if (v.isEmpty) return 'Telefon numarası girin';
-    if (!RegExp(r'^0?5[0-9]{9}$').hasMatch(v)) {
-      return 'Geçerli bir cep telefonu girin (05XX XXX XX XX)';
+    final local = PhoneInputFormatter.extractLocalDigits(value ?? '');
+    if (local.isEmpty) return 'Telefon numarası girin';
+    if (!RegExp(r'^5[0-9]{9}$').hasMatch(local)) {
+      return 'Geçerli bir cep telefonu girin (+90 5XX XXX XX XX)';
     }
     return null;
   }
 
-  /// Telefonu veritabanına yazmadan önce tek biçime getirir: boşluk/ayraç
-  /// karakterleri atılır, başta 0 yoksa eklenir (05XXXXXXXXX).
+  /// Telefonu veritabanına yazmadan önce E.164 biçimine getirir:
+  /// "+905XXXXXXXXX" (Faz 2 kararı — bkz. CLAUDE.md).
   static String normalizePhone(String value) {
-    final v = value.replaceAll(RegExp(r'[\s()-]'), '');
-    return v.startsWith('0') ? v : '0$v';
+    return '+90${PhoneInputFormatter.extractLocalDigits(value)}';
+  }
+
+  /// Veritabanındaki E.164 telefonu ("+905XXXXXXXXX") profil/kayıt
+  /// ekranlarında düzenlenebilir alanı doldururken maskeli görünüme çevirir.
+  static String phoneToDisplay(String storedE164) {
+    final local = PhoneInputFormatter.extractLocalDigits(storedE164);
+    if (local.length != 10) return storedE164; // beklenmeyen biçim, olduğu gibi göster
+    return PhoneInputFormatter.maskDigits(local);
   }
 
   /// Genel zorunlu alan doğrulaması (ilçe gibi serbest metin alanları için).
