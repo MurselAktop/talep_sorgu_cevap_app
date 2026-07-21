@@ -65,12 +65,25 @@ class _LoginScreenState extends State<LoginScreen> {
       final userId = SupabaseService.client.auth.currentUser!.id;
       final profile = await SupabaseService.client
           .from('users')
-          .select('role')
+          .select('role, is_active')
           .eq('id', userId)
           .single();
       final role = profile['role'] as String;
       final isVatandasAccount = role == 'vatandas';
       final expectedVatandas = type == _LoginType.vatandas;
+
+      // Faz 4 (2026-07-21): pasifleştirilmiş hesap kontrolü. Bu, sadece
+      // temiz bir mesaj göstermek için — gerçek güvenlik sınırı RLS/RPC
+      // katmanında (current_user_is_active() + RESTRICTIVE politikalar).
+      if (profile['is_active'] == false) {
+        await SupabaseService.client.auth.signOut();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Hesabınız pasifleştirilmiş. Lütfen yönetici ile iletişime geçin.')),
+        );
+        _returnToSelection();
+        return;
+      }
 
       if (isVatandasAccount != expectedVatandas) {
         await SupabaseService.client.auth.signOut();

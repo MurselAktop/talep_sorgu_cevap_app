@@ -63,6 +63,7 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
   bool _isLoading = true;
   String? _role;
   bool _isLoadingPersonnel = false;
+  bool _isLoadingDepartmentsForReassign = false;
 
   @override
   void initState() {
@@ -260,6 +261,99 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Talep atanamadı. Lütfen tekrar deneyin.')),
       );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.')),
+      );
+    }
+  }
+
+  /// Faz 4: müdür (veya admin), henüz kesin sonuçlanmamış (status='acik')
+  /// bir talebi başka birime yönlendirebilir. Düz bir UPDATE bunu yapamaz —
+  /// müdürün RLS politikası, yeni satırın department_id'sinin de kendi
+  /// birimiyle eşleşmesini şart koşuyor (WITH CHECK) — bu yüzden
+  /// `reassign_request_department` security definer RPC'si kullanılıyor.
+  Future<void> _onReassignPressed() async {
+    setState(() => _isLoadingDepartmentsForReassign = true);
+    try {
+      final response = await _client
+          .from('departments')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name');
+      final currentDepartmentId = _request?['department_id'];
+      final departments = List<Map<String, dynamic>>.from(
+        response,
+      ).where((d) => d['id'] != currentDepartmentId).toList();
+
+      if (!mounted) return;
+      _showReassignDialog(departments);
+    } on PostgrestException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Birim listesi yüklenemedi. Lütfen tekrar deneyin.')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoadingDepartmentsForReassign = false);
+    }
+  }
+
+  void _showReassignDialog(List<Map<String, dynamic>> departments) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Birim Değiştir'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: departments.isEmpty
+              ? const Text('Yönlendirilebilecek başka aktif birim yok.')
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: departments.length,
+                  itemBuilder: (context, index) {
+                    final department = departments[index];
+                    return ListTile(
+                      title: Text(department['name'] as String? ?? ''),
+                      onTap: () => _reassignRequest(dialogContext, department['id'] as int),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Vazgeç'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _reassignRequest(BuildContext dialogContext, int newDepartmentId) async {
+    try {
+      await _client.rpc(
+        'reassign_request_department',
+        params: {'p_request_id': widget.requestId, 'p_new_department_id': newDepartmentId},
+      );
+
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Talep başka birime yönlendirildi.')),
+      );
+      await _loadRequest();
+    } on PostgrestException catch (e) {
+      // RPC'nin raise exception ile fırlattığı mesaj zaten anlaşılır Türkçe
+      // metin (bkz. reassign_request_department() — "Bu talebi yönlendirme
+      // yetkiniz yok.", "Hedef birim pasif, talep yönlendirilemez." vb.).
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -638,6 +732,9 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
     final request = _request;
     final result = _result;
     final canAssign = _role == 'mudur' && request != null && request['assigned_to'] == null;
+    final canReassign = (_role == 'mudur' || _role == 'admin') &&
+        request != null &&
+        request['status'] == 'acik';
     final canResolve = _role == 'personel' &&
         request != null &&
         request['assigned_to'] == _client.auth.currentUser?.id &&
@@ -688,6 +785,21 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                                   child: CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Text('Ata'),
+                        ),
+                      ],
+                      if (canReassign) ...[
+                        const SizedBox(height: 16),
+                        OutlinedButton(
+                          onPressed: _isLoadingDepartmentsForReassign
+                              ? null
+                              : _onReassignPressed,
+                          child: _isLoadingDepartmentsForReassign
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Text('Birim Değiştir'),
                         ),
                       ],
                       if (canResolve) ...[
