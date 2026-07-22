@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
 import 'admin_department_screen.dart';
 import 'admin_invite_screen.dart';
+import 'admin_stats_screen.dart';
 import 'admin_users_screen.dart';
 import 'login_screen.dart';
+import 'manager_stats_screen.dart';
 import 'my_requests_screen.dart';
 import 'notifications_screen.dart';
 import 'profile_screen.dart';
@@ -32,6 +35,7 @@ class _HomePageState extends State<HomePage> {
   bool _isLoadingRole = true;
   bool _canViewRequestList = false;
   bool _isAdmin = false;
+  bool _isMudur = false;
   String? _fullName;
   int _unreadNotificationCount = 0;
 
@@ -65,7 +69,11 @@ class _HomePageState extends State<HomePage> {
         await SupabaseService.client.auth.signOut();
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Hesabınız pasifleştirilmiş. Lütfen yönetici ile iletişime geçin.')),
+          const SnackBar(
+            content: Text(
+              'Hesabınız pasifleştirilmiş. Lütfen yönetici ile iletişime geçin.',
+            ),
+          ),
         );
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -77,15 +85,38 @@ class _HomePageState extends State<HomePage> {
       final role = profile['role'] as String;
       if (mounted) {
         setState(() {
-          _canViewRequestList = role == 'personel' || role == 'mudur' || role == 'admin';
+          _canViewRequestList =
+              role == 'personel' || role == 'mudur' || role == 'admin';
           _isAdmin = role == 'admin';
+          _isMudur = role == 'mudur';
           _fullName = profile['full_name'] as String?;
         });
+      }
+
+      // Faz 5: SLA eskalasyon kontrolü, müdür/admin ana ekranı her açtığında
+      // fire-and-forget tetiklenir (pg_cron bu self-hosted kurulumda yok —
+      // "uygulama açılışında kontrol" yaklaşımı, kullanıcı kararı). Sadece
+      // yeni aşan talepler için bildirim üretir (sla_notified_at koruması),
+      // bu yüzden her açılışta çağırmak güvenli/ucuz.
+      if (role == 'mudur' || role == 'admin') {
+        _checkSlaBreaches();
       }
     } catch (_) {
       // Rol okunamazsa buton gösterilmez; ekranın geri kalanı çalışmaya devam eder.
     } finally {
       if (mounted) setState(() => _isLoadingRole = false);
+    }
+  }
+
+  /// Sonucu ekranda hiçbir şekilde göstermiyoruz (bildirimler zaten
+  /// notifications_screen.dart'ta görünür) — sessizce yutulur, tıpkı
+  /// `_loadUnreadNotificationCount` gibi.
+  Future<void> _checkSlaBreaches() async {
+    try {
+      await SupabaseService.client.rpc('check_sla_breaches');
+      if (mounted) _loadUnreadNotificationCount();
+    } catch (_) {
+      // Sessizce yutulur.
     }
   }
 
@@ -117,8 +148,38 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Çıkış yapılamadı. Lütfen tekrar deneyin.')),
+        const SnackBar(
+          content: Text('Çıkış yapılamadı. Lütfen tekrar deneyin.'),
+        ),
       );
+    }
+  }
+
+  /// Ana ekran, girişten sonra `pushReplacement` ile Navigator'daki TEK route
+  /// olduğu için (bkz. login_screen.dart), buradaki Android geri tuşu normalde
+  /// doğrudan uygulamadan çıkışa denk gelir. `PopScope(canPop: false)` bunu
+  /// engelleyip önce bir onay dialogu gösterir; "Evet" denirse `SystemNavigator.pop()`
+  /// ile (geri dönülecek bir alt route olmadığı için) uygulama gerçekten kapatılır.
+  Future<void> _confirmExitAndPop() async {
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Uygulamadan Çık'),
+        content: const Text('Çıkış yapmak istediğinize emin misiniz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Hayır'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Evet'),
+          ),
+        ],
+      ),
+    );
+    if (shouldExit == true) {
+      SystemNavigator.pop();
     }
   }
 
@@ -126,113 +187,151 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final isLoggedIn = SupabaseService.client.auth.currentUser != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('TŞYS — Talep ve Şikâyet Yönetim Sistemi'),
-        actions: [
-          if (isLoggedIn)
-            IconButton(
-              icon: const Icon(Icons.person),
-              tooltip: 'Profilim',
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const ProfileScreen()),
-              ),
-            ),
-          if (isLoggedIn)
-            IconButton(
-              icon: Badge(
-                backgroundColor: Colors.red,
-                label: Text('$_unreadNotificationCount'),
-                isLabelVisible: _unreadNotificationCount > 0,
-                child: const Icon(Icons.notifications),
-              ),
-              tooltip: 'Bildirimler',
-              onPressed: () async {
-                await Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const NotificationsScreen()),
-                );
-                if (!mounted) return;
-                _loadUnreadNotificationCount();
-              },
-            ),
-          if (isLoggedIn)
-            IconButton(
-              icon: const Icon(Icons.logout),
-              tooltip: 'Çıkış Yap',
-              onPressed: _signOut,
-            ),
-        ],
-      ),
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isLoggedIn) ...[
-              if (_isLoadingRole)
-                const SizedBox(
-                  height: 20,
-                  width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else if (_fullName != null)
-                Text(
-                  'Hoşgeldin, $_fullName',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              const SizedBox(height: 16),
-            ],
-            const Text('Talep ve Şikâyet Yönetim Sistemi'),
-            if (isLoggedIn) ...[
-              const SizedBox(height: 24),
-              FilledButton(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _confirmExitAndPop();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('TŞYS — Talep ve Şikâyet Yönetim Sistemi'),
+          actions: [
+            if (isLoggedIn)
+              IconButton(
+                icon: const Icon(Icons.person),
+                tooltip: 'Profilim',
                 onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const RequestCreateScreen()),
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
                 ),
-                child: const Text('Talep Oluştur'),
               ),
-            ],
-            if (isLoggedIn) ...[
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const MyRequestsScreen()),
+            if (isLoggedIn)
+              IconButton(
+                icon: Badge(
+                  backgroundColor: Colors.red,
+                  label: Text('$_unreadNotificationCount'),
+                  isLabelVisible: _unreadNotificationCount > 0,
+                  child: const Icon(Icons.notifications),
                 ),
-                child: const Text('Taleplerim'),
+                tooltip: 'Bildirimler',
+                onPressed: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationsScreen(),
+                    ),
+                  );
+                  if (!mounted) return;
+                  _loadUnreadNotificationCount();
+                },
               ),
-            ],
-            if (!_isLoadingRole && _canViewRequestList) ...[
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const RequestListScreen()),
-                ),
-                child: const Text('Gelen Talepler'),
+            if (isLoggedIn)
+              IconButton(
+                icon: const Icon(Icons.logout),
+                tooltip: 'Çıkış Yap',
+                onPressed: _signOut,
               ),
-            ],
-            if (!_isLoadingRole && _isAdmin) ...[
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const AdminInviteScreen()),
-                ),
-                child: const Text('Davet Kodu Oluştur'),
-              ),
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const AdminDepartmentScreen()),
-                ),
-                child: const Text('Birim Yönetimi'),
-              ),
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
-                ),
-                child: const Text('Kullanıcı Yönetimi'),
-              ),
-            ],
           ],
+        ),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isLoggedIn) ...[
+                if (_isLoadingRole)
+                  const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else if (_fullName != null)
+                  Text(
+                    'Hoşgeldin, $_fullName',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                const SizedBox(height: 16),
+              ],
+              const Text('Talep ve Şikâyet Yönetim Sistemi'),
+              if (isLoggedIn) ...[
+                const SizedBox(height: 24),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const RequestCreateScreen(),
+                    ),
+                  ),
+                  child: const Text('Talep Oluştur'),
+                ),
+              ],
+              if (isLoggedIn) ...[
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const MyRequestsScreen()),
+                  ),
+                  child: const Text('Taleplerim'),
+                ),
+              ],
+              if (!_isLoadingRole && _canViewRequestList) ...[
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const RequestListScreen(),
+                    ),
+                  ),
+                  child: const Text('Gelen Talepler'),
+                ),
+              ],
+              if (!_isLoadingRole && _isAdmin) ...[
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const AdminInviteScreen(),
+                    ),
+                  ),
+                  child: const Text('Davet Kodu Oluştur'),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const AdminDepartmentScreen(),
+                    ),
+                  ),
+                  child: const Text('Birim Yönetimi'),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+                  ),
+                  child: const Text('Kullanıcı Yönetimi'),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AdminStatsScreen()),
+                  ),
+                  child: const Text('İstatistikler'),
+                ),
+              ],
+              if (!_isLoadingRole && _isMudur) ...[
+                const SizedBox(height: 16),
+                FilledButton.tonal(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const ManagerStatsScreen(),
+                    ),
+                  ),
+                  child: const Text('İstatistikler'),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

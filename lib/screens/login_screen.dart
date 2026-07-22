@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/auth_service.dart';
+import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
 import 'citizen_guest_menu_screen.dart';
 import 'forgot_password_screen.dart';
@@ -31,6 +32,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  bool _rememberMe = false;
+  bool _obscurePassword = true;
   _LoginType? _selectedType;
 
   @override
@@ -47,7 +50,10 @@ class _LoginScreenState extends State<LoginScreen> {
   void _returnToSelection() {
     _emailController.clear();
     _passwordController.clear();
-    setState(() => _selectedType = null);
+    setState(() {
+      _selectedType = null;
+      _rememberMe = false;
+    });
   }
 
   Future<void> _submit() async {
@@ -65,7 +71,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final userId = SupabaseService.client.auth.currentUser!.id;
       final profile = await SupabaseService.client
           .from('users')
-          .select('role, is_active')
+          .select('role, full_name, is_active')
           .eq('id', userId)
           .single();
       final role = profile['role'] as String;
@@ -102,6 +108,15 @@ class _LoginScreenState extends State<LoginScreen> {
         );
         _returnToSelection();
         return;
+      }
+
+      // "Beni Hatırla" tercihi burada, giriş kesinleşmiş (rol/aktiflik
+      // kontrolü geçmiş) olduğu için kaydediliyor — erken bir aşamada
+      // kaydedilseydi, sonradan reddedilen bir girişte bile yanlışlıkla
+      // kalıcı olurdu.
+      await LocalPrefsService.setRememberMe(_rememberMe);
+      if (_rememberMe) {
+        await LocalPrefsService.setCachedFullName(profile['full_name'] as String?);
       }
 
       if (!mounted) return;
@@ -220,10 +235,25 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Şifre'),
+                obscureText: _obscurePassword,
+                decoration: InputDecoration(
+                  labelText: 'Şifre',
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                ),
                 validator: (value) =>
                     (value == null || value.isEmpty) ? 'Şifre girin' : null,
+              ),
+              CheckboxListTile(
+                value: _rememberMe,
+                onChanged: _isLoading
+                    ? null
+                    : (value) => setState(() => _rememberMe = value ?? false),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Beni Hatırla'),
               ),
               Align(
                 alignment: Alignment.centerRight,

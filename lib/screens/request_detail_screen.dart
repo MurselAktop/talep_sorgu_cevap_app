@@ -2,16 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
-
-/// `requests.status` ham değerlerinin Türkçe karşılıkları (bkz. CLAUDE.md —
-/// Talep durum akışı).
-const Map<String, String> _statusLabels = {
-  'acik': 'Açık',
-  'cozuldu': 'Çözüldü (Onay Bekliyor)',
-  'onaylandi': 'Onaylandı',
-  'reddedildi': 'Reddedildi',
-  'iptal': 'İptal Edildi',
-};
+import '../widgets/status_badge.dart';
 
 /// `requests.requester_type` ham değerlerinin Türkçe karşılıkları.
 const Map<String, String> _requesterTypeLabels = {
@@ -52,6 +43,29 @@ String _originalFileName(String storagePath) {
   final fileName = storagePath.split('/').last;
   final match = RegExp(r'^\d+_(.+)$').firstMatch(fileName);
   return match?.group(1) ?? fileName;
+}
+
+/// Faz 5: `requests.resolved_at` doluysa (rapor onaylandığında set edilir)
+/// oluşturulma ile çözülme arasındaki süreyi Türkçe "X gün Y saat" biçiminde
+/// gösterir (intl paketi kullanılmıyor — notifications_screen.dart'taki
+/// hand-rolled tarih formatlama deseniyle tutarlı).
+String? _formatResolutionDuration(String? createdAt, String? resolvedAt) {
+  if (createdAt == null || resolvedAt == null) return null;
+  final created = DateTime.tryParse(createdAt);
+  final resolved = DateTime.tryParse(resolvedAt);
+  if (created == null || resolved == null) return null;
+
+  final duration = resolved.difference(created);
+  final days = duration.inDays;
+  final hours = duration.inHours.remainder(24);
+
+  if (days > 0) {
+    return hours > 0 ? '$days gün $hours saat' : '$days gün';
+  }
+  if (duration.inHours > 0) {
+    return '${duration.inHours} saat';
+  }
+  return '${duration.inMinutes} dakika';
 }
 
 class _RequestDetailScreenState extends State<RequestDetailScreen> {
@@ -608,6 +622,10 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
     final requesterType = request['requester_type'] as String? ?? '';
     final department = request['departments'] as Map<String, dynamic>?;
     final assignedTo = request['assigned_to'];
+    final resolutionDuration = _formatResolutionDuration(
+      request['created_at'] as String?,
+      request['resolved_at'] as String?,
+    );
 
     return Card(
       child: Padding(
@@ -618,11 +636,25 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
             _buildInfoRow('Başlık:', request['title'] as String? ?? ''),
             _buildInfoRow('Açıklama:', request['description'] as String? ?? ''),
             _buildInfoRow('Kategori:', request['category'] as String? ?? ''),
-            _buildInfoRow('Durum:', _statusLabels[status] ?? status),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(
+                    width: 110,
+                    child: Text('Durum:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  StatusBadge(status: status),
+                ],
+              ),
+            ),
             _buildInfoRow('Talep Sahibi:', _requesterTypeLabels[requesterType] ?? requesterType),
             _buildInfoRow('Birim:', department?['name'] as String? ?? ''),
             _buildInfoRow('Atanan:', assignedTo == null ? 'Henüz atanmadı' : 'Atanmış'),
             _buildInfoRow('Oluşturulma:', request['created_at']?.toString() ?? ''),
+            if (resolutionDuration != null)
+              _buildInfoRow('Çözüm Süresi:', '$resolutionDuration içinde çözüldü'),
           ],
         ),
       ),
