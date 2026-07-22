@@ -36,6 +36,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _passwordController = TextEditingController();
   String? _selectedIl;
   bool _isLoading = false;
+  bool _obscurePassword = true;
   String? _emailErrorText;
   String? _tcNoErrorText;
 
@@ -227,8 +228,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _passwordController,
-                      obscureText: true,
-                      decoration: const InputDecoration(labelText: 'Şifre'),
+                      obscureText: _obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: 'Şifre',
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                        ),
+                      ),
                       validator: (value) {
                         if (value == null || value.isEmpty)
                           return 'Şifre girin';

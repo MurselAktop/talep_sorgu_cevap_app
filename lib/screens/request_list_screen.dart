@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
 import '../widgets/request_filters.dart';
+import '../widgets/status_badge.dart';
 import 'request_detail_screen.dart';
 
 /// `requests.requester_type` ham değerlerinin Türkçe karşılıkları.
@@ -151,7 +152,12 @@ class _RequestListScreenState extends State<RequestListScreen> {
           children: [
             Text('Kategori: ${request['category'] as String? ?? ''}'),
             Text('Talep Sahibi: ${_requesterTypeLabels[requesterType] ?? requesterType}'),
-            Text('Durum: ${statusLabels[status] ?? status}'),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                children: [const Text('Durum: '), StatusBadge(status: status)],
+              ),
+            ),
             Text('Birim: ${department?['name'] as String? ?? ''}'),
             Text('Oluşturulma: ${request['created_at']?.toString() ?? ''}'),
             Padding(

@@ -2,16 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
-
-/// `requests.status` ham değerlerinin kullanıcıya gösterilecek Türkçe
-/// karşılıkları (bkz. CLAUDE.md — Talep durum akışı).
-const Map<String, String> _statusLabels = {
-  'acik': 'Açık',
-  'cozuldu': 'Çözüldü (Onay Bekliyor)',
-  'onaylandi': 'Onaylandı',
-  'reddedildi': 'Reddedildi',
-  'iptal': 'İptal Edildi',
-};
+import '../widgets/status_badge.dart';
 
 /// Anonim vatandaşın, kayıt sırasında aldığı `access_token` ile hesap
 /// açmadan talebinin durumunu sorguladığı ekran (bkz. CLAUDE.md — hibrit
@@ -101,7 +92,19 @@ class _QueryResultScreenState extends State<QueryResultScreen> {
             _buildInfoRow('Başlık:', result['title'] as String? ?? ''),
             _buildInfoRow('Açıklama:', result['description'] as String? ?? ''),
             _buildInfoRow('Kategori:', result['category'] as String? ?? ''),
-            _buildInfoRow('Durum:', _statusLabels[status] ?? status),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(
+                    width: 110,
+                    child: Text('Durum:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  StatusBadge(status: status),
+                ],
+              ),
+            ),
             _buildInfoRow('Birim:', result['department_name'] as String? ?? ''),
             _buildInfoRow('Oluşturulma:', result['created_at']?.toString() ?? ''),
           ],

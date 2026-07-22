@@ -77,7 +77,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .timeout(_networkTimeout);
 
       String departmentLabel = 'Yok';
-      final departmentId = profile['department_id'] as String?;
+      // department_id, departments.id gibi bigint'tir (diğer tabloların
+      // aksine uuid DEĞİL) — "as String?" cast'i vatandaşta (her zaman null
+      // olduğu için) sessizce geçiyor ama admin/personel/müdürde (gerçek bir
+      // int değeri olduğu için) TypeError fırlatıp bu profili yükleyemiyordu.
+      final departmentId = profile['department_id'];
       if (departmentId != null) {
         final department = await SupabaseService.client
             .from('departments')

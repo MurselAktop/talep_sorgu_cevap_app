@@ -1440,3 +1440,325 @@ ALTER FUNCTION "public"."reassign_request_department"("p_request_id" "uuid", "p_
 GRANT ALL ON FUNCTION "public"."reassign_request_department"("p_request_id" "uuid", "p_new_department_id" bigint) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."reassign_request_department"("p_request_id" "uuid", "p_new_department_id" bigint) TO "service_role";
 
+
+--
+-- Faz 5 (2026-07-21) — SLA + istatistikler: çözüm süresi takibi.
+--
+-- requests.resolved_at: rapor onaylandığında (results.approval_status =
+-- 'onaylandi') dolar; talep detayında "X saat/gün içinde çözüldü" göstermek
+-- için kullanılır. requests.sla_notified_at: check_sla_breaches() RPC'sinin
+-- aynı talep için birden fazla eskalasyon bildirimi üretmesini önler.
+--
+ALTER TABLE "public"."requests"
+    ADD COLUMN IF NOT EXISTS "resolved_at" timestamp with time zone,
+    ADD COLUMN IF NOT EXISTS "sla_notified_at" timestamp with time zone;
+
+
+-- sync_request_status_from_result()'ın yeniden tanımı (orijinali satır
+-- 276'da, dosyanın geri kalanındaki Faz 1/Faz 4 desenine uygun olarak burada
+-- DOKUNULMADAN bırakıldı — bu proje migration dosyasını append-only
+-- kronolojik bir günlük olarak tutuyor, en son CREATE OR REPLACE kazanır).
+-- Tek fark: resolved_at artık onay/onay-geri-alma durumuna göre set/temizleniyor.
+--
+-- ÖNEMLİ: old.approval_status, INSERT olaylarında (TG_OP='INSERT') OLD kaydı
+-- hiç atanmamış olduğu için doğrudan bir SQL CASE içinde referans
+-- verilemez ("record "old" is not assigned yet" hatası verir) — bu yüzden
+-- resolved_at'ı temizleme kararı, SQL'e geçmeden ÖNCE ayrı bir PL/pgSQL IF
+-- ile (TG_OP kontrolü short-circuit garantili) bir boolean değişkende
+-- hesaplanıyor.
+CREATE OR REPLACE FUNCTION "public"."sync_request_status_from_result"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_created_by uuid;
+  v_clear_resolved_at boolean := false;
+begin
+  -- Faz 4'te RLS'in müdürün onay durumunu 'onaylandi'dan geri çevirmesini
+  -- engellemediği bulundu (UI hiç yapmıyor ama DB izin veriyor) — bu yüzden
+  -- resolved_at, savunma amaçlı, onay geri alınırsa temizleniyor.
+  if TG_OP = 'UPDATE' and old.approval_status = 'onaylandi' and new.approval_status <> 'onaylandi' then
+    v_clear_resolved_at := true;
+  end if;
+
+  update requests
+  set status = case new.approval_status
+    when 'beklemede' then 'cozuldu'
+    when 'onaylandi' then 'onaylandi'
+    when 'reddedildi' then 'reddedildi'
+    else status
+  end,
+  resolved_at = case
+    when new.approval_status = 'onaylandi' then now()
+    when v_clear_resolved_at then null
+    else resolved_at
+  end
+  where id = new.request_id
+  returning created_by into v_created_by;
+
+  if new.approval_status = 'onaylandi' and v_created_by is not null then
+    insert into notifications (user_id, request_id, message)
+    values (v_created_by, new.request_id, 'Talebiniz onaylandı, sonuçlandı.');
+  elsif new.approval_status = 'reddedildi' then
+    insert into notifications (user_id, request_id, message)
+    values (new.resolved_by, new.request_id, 'Raporunuz reddedildi, lütfen yeniden inceleyin.');
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."sync_request_status_from_result"() OWNER TO "postgres";
+
+
+--
+-- Faz 5 (2026-07-21) — SLA eskalasyonu: check_sla_breaches() RPC.
+--
+-- Kullanıcı kararı: DB tarafı zamanlanmış kontrol (pg_cron) YERİNE uygulama
+-- açılışında kontrol — pg_cron bu self-hosted kurulumda etkin değil,
+-- etkinleştirmek shared_preload_libraries + container yeniden yapılandırması
+-- gerektirir (Faz 2'deki Inbucket'a benzer bir altyapı riski). Bu RPC,
+-- müdür/admin home_screen.dart'ı her açtığında fire-and-forget çağrılır.
+--
+-- Eşik: sabit 3 gün (kullanıcı kararı — ayrı bir ayar tablosu YOK).
+-- Tekrar hatırlatma: YOK — sla_notified_at set edildikten sonra o talep için
+-- bir daha bildirim üretilmez (kullanıcı kararı, tek seferlik uyarı).
+-- Müdürsüz birim: admin(ler)e bildirilir (kullanıcı kararı). sla_notified_at
+-- SADECE gerçekten en az bir bildirim eklendiyse set edilir — aksi halde
+-- müdürsüz bir birimdeki talep hiç bildirim gitmeden "işlendi" gibi görünüp
+-- bir daha asla kontrol edilmezdi (plan aşamasında bulunan bir hata).
+--
+
+CREATE OR REPLACE FUNCTION "public"."check_sla_breaches"() RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_request record;
+  v_notified_count int;
+  v_message text;
+  v_days_open int;
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+
+  for v_request in
+    select id, title, department_id, created_at
+    from public.requests
+    where status in ('acik', 'cozuldu')
+      and created_at < now() - interval '3 days'
+      and sla_notified_at is null
+  loop
+    v_days_open := extract(day from now() - v_request.created_at);
+    v_message := format('"%s" başlıklı talep %s gündür açık, kontrol edin.', v_request.title, v_days_open);
+
+    insert into public.notifications (user_id, request_id, message)
+    select u.id, v_request.id, v_message
+    from public.users u
+    where u.department_id = v_request.department_id
+      and u.role = 'mudur'
+      and u.is_active;
+
+    get diagnostics v_notified_count = row_count;
+
+    -- Departmanda aktif müdür yoksa admin(ler)e bildirilir (kullanıcı kararı)
+    -- — müdürsüz bir birim zaten başlı başına operasyonel bir sorun.
+    if v_notified_count = 0 then
+      insert into public.notifications (user_id, request_id, message)
+      select u.id, v_request.id, v_message || ' (Birimde aktif müdür bulunamadı.)'
+      from public.users u
+      where u.role = 'admin'
+        and u.is_active;
+
+      get diagnostics v_notified_count = row_count;
+    end if;
+
+    if v_notified_count > 0 then
+      update public.requests set sla_notified_at = now() where id = v_request.id;
+    end if;
+  end loop;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."check_sla_breaches"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."check_sla_breaches"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."check_sla_breaches"() TO "service_role";
+
+
+--
+-- Faz 5 (2026-07-21) — İstatistikler: get_admin_stats() / get_manager_stats().
+--
+-- İki ayrı RPC (tek RPC + role'e göre farklı dönüş şekli YERİNE) — bu kod
+-- tabanının hiçbir RPC'si dönüş şeklini caller role'üne göre değiştirmiyor
+-- (reassign_request_department role'e göre sadece YETKİ kontrolü yapıyor,
+-- hep aynı şeyi döndürüyor); rol dallanmasını Dart tarafına sızdırmamak için
+-- ayrı RPC tercih edildi. RETURNS TABLE kullanılıyor (jsonb değil) — veri
+-- zaten tablosal, Flutter tarafı List<Map<String,dynamic>>.from(response) ile
+-- diğer ekranlardaki desenle aynı şekilde tüketebiliyor.
+--
+-- avg_resolution_hours: resolved_at sadece 'onaylandi' durumundaki taleplerde
+-- dolu olduğu için (bkz. sync_request_status_from_result()), avg() diğer
+-- durumlardaki NULL resolved_at'ları zaten otomatik yok sayıyor — ayrı bir
+-- FILTER koşuluna gerek yok.
+--
+
+CREATE OR REPLACE FUNCTION "public"."get_admin_stats"() RETURNS TABLE(
+    "department_id" bigint,
+    "department_name" "text",
+    "status" "text",
+    "request_count" bigint,
+    "avg_resolution_hours" numeric
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if public.current_user_role() <> 'admin' then
+    raise exception 'Bu işlem için admin yetkisi gerekir.';
+  end if;
+
+  return query
+  select r.department_id, d.name, r.status, count(*)::bigint,
+    avg(extract(epoch from (r.resolved_at - r.created_at)) / 3600.0)
+  from public.requests r
+  join public.departments d on d.id = r.department_id
+  group by r.department_id, d.name, r.status
+  order by d.name, r.status;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_admin_stats"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_admin_stats"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_admin_stats"() TO "service_role";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_manager_stats"() RETURNS TABLE(
+    "status" "text",
+    "request_count" bigint,
+    "avg_resolution_hours" numeric
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if public.current_user_role() <> 'mudur' then
+    raise exception 'Bu işlem için müdür yetkisi gerekir.';
+  end if;
+
+  return query
+  select r.status, count(*)::bigint,
+    avg(extract(epoch from (r.resolved_at - r.created_at)) / 3600.0)
+  from public.requests r
+  where r.department_id = public.current_user_department()
+  group by r.status
+  order by r.status;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_manager_stats"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_manager_stats"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_manager_stats"() TO "service_role";
+
+
+-- Faz 5 devamı (2026-07-22) — İstatistik dashboard'u için çözüm süresi
+-- trendi: get_admin_resolution_trend() / get_manager_resolution_trend().
+--
+-- get_admin_stats()/get_manager_stats() ile AYNI desen: tek RPC + role'e
+-- göre farklı dönüş şekli YERİNE iki ayrı RPC (rol dallanmasını Dart
+-- tarafına sızdırmamak için, bkz. yukarıdaki gerekçe).
+--
+-- Aylık kırılım (date_trunc('month', ...)) seçildi — haftalık kırılım şu an
+-- mevcut az sayıda test verisiyle anlamlı bir trend göstermezdi.
+-- resolved_at'ı NULL olan (henüz onaylanmamış VEYA CLAUDE.md'nin bilinen
+-- sınırlaması gereği geçmişe dönük doldurulmamış) kayıtlar `where
+-- r.resolved_at is not null` ile hariç tutuluyor — bu satırlar
+-- date_trunc(NULL) = NULL olacağından zaten kendi (anlamsız) grubunu
+-- oluştururdu, açıkça filtrelemek daha doğru.
+
+CREATE OR REPLACE FUNCTION "public"."get_admin_resolution_trend"() RETURNS TABLE(
+    "period_start" "date",
+    "avg_resolution_hours" numeric,
+    "request_count" bigint
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if public.current_user_role() <> 'admin' then
+    raise exception 'Bu işlem için admin yetkisi gerekir.';
+  end if;
+
+  return query
+  select date_trunc('month', r.resolved_at)::date,
+    avg(extract(epoch from (r.resolved_at - r.created_at)) / 3600.0),
+    count(*)::bigint
+  from public.requests r
+  where r.resolved_at is not null
+  group by date_trunc('month', r.resolved_at)
+  order by 1;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_admin_resolution_trend"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_admin_resolution_trend"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_admin_resolution_trend"() TO "service_role";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_manager_resolution_trend"() RETURNS TABLE(
+    "period_start" "date",
+    "avg_resolution_hours" numeric,
+    "request_count" bigint
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if public.current_user_role() <> 'mudur' then
+    raise exception 'Bu işlem için müdür yetkisi gerekir.';
+  end if;
+
+  return query
+  select date_trunc('month', r.resolved_at)::date,
+    avg(extract(epoch from (r.resolved_at - r.created_at)) / 3600.0),
+    count(*)::bigint
+  from public.requests r
+  where r.resolved_at is not null
+    and r.department_id = public.current_user_department()
+  group by date_trunc('month', r.resolved_at)
+  order by 1;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_manager_resolution_trend"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_manager_resolution_trend"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_manager_resolution_trend"() TO "service_role";
+

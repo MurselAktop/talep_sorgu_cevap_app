@@ -44,6 +44,10 @@ class _AdminDepartmentScreenState extends State<AdminDepartmentScreen> {
           .from('departments')
           .select('id, name, is_active')
           .order('name');
+      // Bu await sırasında kullanıcı geri tuşuyla ekrandan çıkmış olabilir
+      // (State dispose edilmiş olabilir) — mounted kontrolü olmadan setState
+      // çağırmak framework'te assertion hatasına yol açar.
+      if (!mounted) return;
       setState(() => _departments = List<Map<String, dynamic>>.from(response));
     } catch (_) {
       if (!mounted) return;
@@ -77,6 +81,10 @@ class _AdminDepartmentScreenState extends State<AdminDepartmentScreen> {
     setState(() => _isCreating = true);
     try {
       await _client.from('departments').insert({'name': name});
+      // Bu await sırasında ekran dispose edilmişse _nameController da
+      // dispose edilmiş olur — dispose edilmiş bir controller'a .clear()
+      // çağırmak hataya yol açar.
+      if (!mounted) return;
       _nameController.clear();
       await _loadDepartments();
     } catch (e) {
@@ -109,53 +117,51 @@ class _AdminDepartmentScreenState extends State<AdminDepartmentScreen> {
     }
   }
 
-  Future<void> _showEditDialog(Map<String, dynamic> department) async {
-    final controller = TextEditingController(text: department['name'] as String);
-    String? errorText;
-
-    await showDialog<void>(
+  void _showEditDialog(Map<String, dynamic> department) {
+    showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: const Text('Birim Adını Düzenle'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: InputDecoration(labelText: 'Birim Adı', errorText: errorText),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('İptal'),
-            ),
-            TextButton(
-              onPressed: () async {
-                final newName = controller.text.trim();
-                if (newName.isEmpty) {
-                  setDialogState(() => errorText = 'Birim adı girin');
-                  return;
-                }
-                try {
-                  await _client
-                      .from('departments')
-                      .update({'name': newName})
-                      .eq('id', department['id']);
-                  if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-                  await _loadDepartments();
-                } catch (e) {
-                  final inlineMessage = _describeSaveError(e);
-                  setDialogState(
-                    () => errorText = inlineMessage ?? 'Güncellenemedi. Lütfen tekrar deneyin.',
-                  );
-                }
-              },
-              child: const Text('Kaydet'),
-            ),
-          ],
-        ),
+      builder: (dialogContext) => _EditDepartmentDialog(
+        initialName: department['name'] as String,
+        onSubmit: (dialogContext, newName) =>
+            _updateDepartmentName(dialogContext, department, newName),
       ),
     );
-    controller.dispose();
+  }
+
+  /// GERÇEK KÖK NEDEN (gerçek cihazda `flutter attach` ile tam stack trace
+  /// yakalanarak doğrulandı — `_dependents.isEmpty` sadece bir yan etkiydi,
+  /// asıl hata "A TextEditingController was used after being disposed"):
+  /// `_showEditDialog` eskiden `TextEditingController`'ı yerel bir
+  /// değişkende tutup `await showDialog(...)` döndükten HEMEN sonra elle
+  /// `dispose()` ediyordu. `showDialog()`'un döndürdüğü Future,
+  /// `Navigator.pop()` çağrıldığı ANDA tamamlanır — ama `pop()` dialogu
+  /// ağaçtan ANINDA kaldırmaz, kapanış (exit) animasyonu süresince (birkaç
+  /// frame boyunca) dialogun widget'ları hâlâ rebuild olmaya devam eder. Bu
+  /// yüzden controller, animasyon daha bitmeden, `TextField` ona hâlâ
+  /// `addListener` çağırmaya çalışırken dispose ediliyordu — zamanlamaya
+  /// bağlı olduğu için bazen sıyırıp geçiyor, bazen çöküyordu.
+  ///
+  /// Kalıcı çözüm: `request_detail_screen.dart`'taki `_ResolveReportDialog`/
+  /// `_EditRequestDialog` ile AYNI, bu kod tabanında zaten kanıtlanmış
+  /// deseni izlemek — dialogu kendi `TextEditingController`'ını
+  /// `initState`'te oluşturup kendi `State.dispose()`'unda temizleyen
+  /// gerçek bir `StatefulWidget` yapmak. Böylece controller'ın ömrü,
+  /// `showDialog`'un Future'ının ne zaman tamamlandığına değil, o
+  /// `StatefulWidget`'ın Element'inin gerçekten ne zaman unmount olduğuna
+  /// (yani kapanış animasyonu tamamen bitene kadar) bağlı olur.
+  Future<String?> _updateDepartmentName(
+    BuildContext dialogContext,
+    Map<String, dynamic> department,
+    String newName,
+  ) async {
+    try {
+      await _client.from('departments').update({'name': newName}).eq('id', department['id']);
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+      if (mounted) setState(() => department['name'] = newName);
+      return null;
+    } catch (e) {
+      return _describeSaveError(e) ?? 'Güncellenemedi. Lütfen tekrar deneyin.';
+    }
   }
 
   @override
@@ -236,6 +242,79 @@ class _AdminDepartmentScreenState extends State<AdminDepartmentScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// "Adını Düzenle" ile açılan, birim adını alan dialog. `request_detail_screen.dart`
+/// içindeki `_ResolveReportDialog`/`_EditRequestDialog` ile aynı deseni izler:
+/// kendi `TextEditingController`'ını kendi `State.dispose()`'unda temizler
+/// (bkz. `_updateDepartmentName` üzerindeki kök neden açıklaması) —
+/// `onSubmit`, başarıda `null`, hatada gösterilecek Türkçe mesajı döndürür.
+class _EditDepartmentDialog extends StatefulWidget {
+  final String initialName;
+  final Future<String?> Function(BuildContext dialogContext, String newName) onSubmit;
+
+  const _EditDepartmentDialog({required this.initialName, required this.onSubmit});
+
+  @override
+  State<_EditDepartmentDialog> createState() => _EditDepartmentDialogState();
+}
+
+class _EditDepartmentDialogState extends State<_EditDepartmentDialog> {
+  late final _nameController = TextEditingController(text: widget.initialName);
+  bool _isSubmitting = false;
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final newName = _nameController.text.trim();
+    if (newName.isEmpty) {
+      setState(() => _errorText = 'Birim adı girin');
+      return;
+    }
+    setState(() {
+      _errorText = null;
+      _isSubmitting = true;
+    });
+    final error = await widget.onSubmit(context, newName);
+    if (!mounted) return;
+    setState(() {
+      _isSubmitting = false;
+      _errorText = error;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Birim Adını Düzenle'),
+      content: TextField(
+        controller: _nameController,
+        autofocus: true,
+        decoration: InputDecoration(labelText: 'Birim Adı', errorText: _errorText),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+          child: const Text('İptal'),
+        ),
+        TextButton(
+          onPressed: _isSubmitting ? null : _submit,
+          child: _isSubmitting
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Kaydet'),
+        ),
+      ],
     );
   }
 }
