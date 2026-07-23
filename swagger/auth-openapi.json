@@ -1,0 +1,56 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Supabase Auth API", "version": "1.0" },
+  "host": "localhost:8000",
+  "basePath": "/auth/v1",
+  "schemes": ["http"],
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "securityDefinitions": {
+    "ApiKeyAuth": { "type": "apiKey", "in": "header", "name": "apikey" }
+  },
+  "security": [{ "ApiKeyAuth": [] }],
+  "paths": {
+    "/signup": {
+      "post": {
+        "summary": "Yeni kullanıcı kaydı oluşturur",
+        "parameters": [{
+          "in": "body", "name": "body", "required": true,
+          "schema": {
+            "type": "object",
+            "required": ["email", "password"],
+            "properties": {
+              "email": { "type": "string", "example": "test1@example.com" },
+              "password": { "type": "string", "example": "test1234" },
+              "data": {
+                "type": "object",
+                "properties": { "full_name": { "type": "string", "example": "Test Kullanici" } }
+              }
+            }
+          }
+        }],
+        "responses": { "200": { "description": "Kayıt başarılı" }, "400": { "description": "Hatalı istek" } }
+      }
+    },
+    "/token": {
+      "post": {
+        "summary": "E-posta/şifre ile giriş yapar (access token alır)",
+        "parameters": [
+          { "in": "query", "name": "grant_type", "required": true, "type": "string", "default": "password" },
+          {
+            "in": "body", "name": "body", "required": true,
+            "schema": {
+              "type": "object",
+              "required": ["email", "password"],
+              "properties": {
+                "email": { "type": "string", "example": "test1@example.com" },
+                "password": { "type": "string", "example": "test1234" }
+              }
+            }
+          }
+        ],
+        "responses": { "200": { "description": "Giriş başarılı, access_token döner" }, "400": { "description": "Hatalı kimlik bilgisi" } }
+      }
+    }
+  }
+}

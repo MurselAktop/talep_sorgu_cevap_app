@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
+import '../widgets/star_rating.dart';
 import '../widgets/stats_dashboard_widgets.dart';
 import '../widgets/status_badge.dart';
 
@@ -26,6 +29,7 @@ class _ManagerStatsScreenState extends State<ManagerStatsScreen> {
 
   List<Map<String, dynamic>> _rows = [];
   List<Map<String, dynamic>> _trendRows = [];
+  List<Map<String, dynamic>> _personnelRatings = [];
   bool _isLoading = true;
   String? _errorText;
 
@@ -44,11 +48,13 @@ class _ManagerStatsScreenState extends State<ManagerStatsScreen> {
       final results = await Future.wait([
         _client.rpc('get_manager_stats'),
         _client.rpc('get_manager_resolution_trend'),
+        _client.rpc('get_personnel_ratings'),
       ]);
       if (!mounted) return;
       setState(() {
         _rows = List<Map<String, dynamic>>.from(results[0] as List);
         _trendRows = List<Map<String, dynamic>>.from(results[1] as List);
+        _personnelRatings = List<Map<String, dynamic>>.from(results[2] as List);
       });
     } on PostgrestException catch (e) {
       if (!mounted) return;
@@ -70,17 +76,30 @@ class _ManagerStatsScreenState extends State<ManagerStatsScreen> {
     }
     final totalCount = statusTotals.values.fold<int>(0, (sum, count) => sum + count);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('İstatistikler (Birimim)'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Yenile',
-            onPressed: _isLoading ? null : _loadStats,
-          ),
-        ],
-      ),
+    // Faz 6 (2026-07-23) — birimin genel ortalama puanı: personel bazlı
+    // ortalamaların puan-sayısı ağırlıklı toplamı (bkz. admin_stats_screen.dart
+    // içindeki aynı hesaplamanın gerekçesi).
+    var weightedSum = 0.0;
+    var weightedCount = 0;
+    for (final row in _personnelRatings) {
+      final avgRating = (row['avg_rating'] as num?)?.toDouble();
+      final ratingCount = row['rating_count'] as int? ?? 0;
+      if (avgRating == null || ratingCount == 0) continue;
+      weightedSum += avgRating * ratingCount;
+      weightedCount += ratingCount;
+    }
+    final departmentAvgRating = weightedCount == 0 ? null : weightedSum / weightedCount;
+
+    return NavigationShell(
+      currentRoute: AppNavRoute.stats,
+      title: 'İstatistikler (Birimim)',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Yenile',
+          onPressed: _isLoading ? null : _loadStats,
+        ),
+      ],
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorText != null
@@ -110,6 +129,41 @@ class _ManagerStatsScreenState extends State<ManagerStatsScreen> {
                         ),
                     ],
                   ),
+                  if (departmentAvgRating != null) ...[
+                    const SizedBox(height: 16),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        // Uzun etiket + StarRatingDisplay yan yana dar ekranda
+                        // taştığı için (sarı-siyah OVERFLOW şeridi) puanı
+                        // etiketin altına alıyoruz.
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.star, color: Colors.amber),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Birimin Ortalama Değerlendirme Puanı',
+                                    style: TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  StarRatingDisplay(
+                                    rating: departmentAvgRating,
+                                    ratingCount: weightedCount,
+                                    size: 18,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 24),
                   Card(
                     child: Padding(

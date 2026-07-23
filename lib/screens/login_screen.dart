@@ -5,6 +5,7 @@ import '../services/auth_service.dart';
 import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
 import 'citizen_guest_menu_screen.dart';
+import 'confirm_email_screen.dart';
 import 'forgot_password_screen.dart';
 import 'home_screen.dart';
 import 'personnel_register_screen.dart';
@@ -125,6 +126,20 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } on AuthException catch (e) {
       if (!mounted) return;
+      // E-posta doğrulaması aktif olduğu için (2026-07-22) henüz doğrulanmamış
+      // bir hesapla giriş denemesi bu hatayı fırlatır — kullanıcıyı doğrudan
+      // doğrulama kodu ekranına yönlendirmek, sadece hata mesajı göstermekten
+      // daha iyi bir akış.
+      if (e.message.toLowerCase().contains('email not confirmed')) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ConfirmEmailScreen(
+              email: _emailController.text.trim(),
+            ),
+          ),
+        );
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_describeAuthError(e))),
       );
@@ -165,7 +180,9 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
       ),
       body: Center(
-        child: type == null ? _buildTypeSelector() : _buildLoginForm(type),
+        child: SingleChildScrollView(
+          child: type == null ? _buildTypeSelector() : _buildLoginForm(type),
+        ),
       ),
     );
   }

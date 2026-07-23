@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
+import '../widgets/star_rating.dart';
 
 const Map<String, String> _adminUsersRoleLabels = {
   'vatandas': 'Vatandaş',
@@ -29,6 +32,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   List<Map<String, dynamic>> _users = [];
   bool _isLoadingUsers = true;
+  // Faz 6 (2026-07-23) — personel_id -> {avg_rating, rating_count}. Admin
+  // ekranı "personel bilgi sekmesinde hem genel bilgilerini hem başarı
+  // oranlarını görsün" isteğiyle eklendi.
+  Map<String, Map<String, dynamic>> _ratingsByPersonnelId = {};
 
   @override
   void initState() {
@@ -43,6 +50,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
           .select('id, email, full_name, role, is_active, departments(name)')
           .order('full_name');
       setState(() => _users = List<Map<String, dynamic>>.from(response));
+      _loadRatings();
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -50,6 +58,22 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       );
     } finally {
       if (mounted) setState(() => _isLoadingUsers = false);
+    }
+  }
+
+  /// Puan bilgisi ikincil olduğundan hata sessizce yutulur — liste yine de
+  /// yıldızsız gösterilmeye devam eder.
+  Future<void> _loadRatings() async {
+    try {
+      final rows = await _client.rpc('get_personnel_ratings') as List;
+      if (!mounted) return;
+      setState(() {
+        _ratingsByPersonnelId = {
+          for (final row in rows) row['personnel_id'] as String: Map<String, dynamic>.from(row),
+        };
+      });
+    } catch (_) {
+      // Sessizce yutulur.
     }
   }
 
@@ -78,8 +102,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Widget build(BuildContext context) {
     final currentUserId = _client.auth.currentUser?.id;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Kullanıcı Yönetimi')),
+    return NavigationShell(
+      currentRoute: AppNavRoute.users,
+      title: 'Kullanıcı Yönetimi',
       body: _isLoadingUsers
           ? const Center(child: CircularProgressIndicator())
           : _users.isEmpty
@@ -92,13 +117,29 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                     final role = user['role'] as String;
                     final department = user['departments'] as Map<String, dynamic>?;
                     final isSelf = user['id'] == currentUserId;
+                    final ratingInfo = _ratingsByPersonnelId[user['id']];
 
                     return ListTile(
                       title: Text(user['full_name'] as String? ?? ''),
-                      subtitle: Text(
-                        '${user['email']} — ${_adminUsersRoleLabels[role] ?? role}'
-                        '${department != null ? ' — ${department['name']}' : ''}',
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${user['email']} — ${_adminUsersRoleLabels[role] ?? role}'
+                            '${department != null ? ' — ${department['name']}' : ''}',
+                          ),
+                          if (role == 'personel') ...[
+                            const SizedBox(height: 4),
+                            StarRatingDisplay(
+                              rating: (ratingInfo?['avg_rating'] as num?)?.toDouble(),
+                              ratingCount: ratingInfo?['rating_count'] as int?,
+                              size: 14,
+                            ),
+                          ],
+                        ],
                       ),
+                      isThreeLine: role == 'personel',
                       trailing: isSelf
                           ? const Text('Siz', style: TextStyle(color: Colors.grey))
                           : TextButton(

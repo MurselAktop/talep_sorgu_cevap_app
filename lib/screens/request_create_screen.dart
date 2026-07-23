@@ -5,6 +5,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 import 'my_requests_screen.dart';
 
 enum _MediaKind { image, video, document }
@@ -384,8 +386,9 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Talep Oluştur')),
+    return NavigationShell(
+      currentRoute: AppNavRoute.createRequest,
+      title: 'Talep Oluştur',
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(

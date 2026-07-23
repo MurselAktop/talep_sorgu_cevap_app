@@ -8,6 +8,7 @@ import '../services/auth_service.dart';
 import '../services/supabase_service.dart';
 import '../utils/phone_input_formatter.dart';
 import '../utils/validators.dart';
+import 'confirm_email_screen.dart';
 import 'login_screen.dart';
 
 /// Vatandaş kaydı ekranı. AuthService.signUp() çağrılırken full_name ve
@@ -78,22 +79,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ilce: _ilceController.text.trim(),
       ).timeout(_networkTimeout);
 
-      // Yerel geliştirmede GOTRUE_MAILER_AUTOCONFIRM=true olduğu için signUp
-      // kullanıcıyı otomatik olarak oturum açmış hale getiriyor. Kayıt
-      // sonrası doğrudan ana ekrana atlamak yerine kullanıcıyı bilinçli
-      // olarak giriş ekranına yönlendirmek istiyoruz, bu yüzden oturumu
-      // burada kapatıyoruz.
+      // E-posta doğrulaması aktif olduğu için (2026-07-22) signUp() artık
+      // kullanıcıyı otomatik oturum açmış hale GETİRMİYOR — hesap
+      // doğrulama e-postasındaki kod girilene kadar giriş yapamaz. Yine de
+      // olası bir oturum kalıntısını (örn. eski davranışa dönülürse) temiz
+      // tutmak için savunmacı bir signOut() yapılıyor.
       await SupabaseService.client.auth.signOut().timeout(_networkTimeout);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Kaydınız oluşturuldu. Şimdi giriş yapabilirsiniz.'),
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ConfirmEmailScreen(
+            email: _emailController.text.trim(),
+          ),
         ),
       );
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
     } on PostgrestException catch (e) {
       // check_registration_availability'nin fırlattığı hata — bu ekranda
       // sadece tc_no kontrolü olduğu için mesaj doğrudan o alana yazılabilir.

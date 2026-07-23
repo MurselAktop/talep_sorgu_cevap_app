@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 
 /// Admin'in birim (departman) ekleyip düzenlediği, sil yerine
 /// pasifleştirdiği ekran (Faz 4). `departments.is_active` false olan bir
@@ -166,8 +168,9 @@ class _AdminDepartmentScreenState extends State<AdminDepartmentScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Birim Yönetimi')),
+    return NavigationShell(
+      currentRoute: AppNavRoute.departments,
+      title: 'Birim Yönetimi',
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(

@@ -14,11 +14,26 @@ const Map<String, MaterialColor> statusColors = {
   'iptal': Colors.grey,
 };
 
+/// Bir `MaterialColor`'ı (ör. `statusColors`'tan) hem açık hem koyu temada
+/// okunaklı bir (arkaplan, yazı) çiftine çevirir — açık temada soluk/pastel
+/// arka plan + koyu yazı (`shade100`/`shade900`, `request_list_screen.dart`'ın
+/// zaten kullandığı "Atanmadı/Atanmış" chip'iyle aynı görsel dil), koyu
+/// temada ise (`app_theme.dart`) doygun/orta ton arka plan + beyaz yazı —
+/// aksi halde açık temaya göre seçilmiş soluk bir chip, koyu (#121212)
+/// arka planda okunaksız bir "beyaz leke" gibi görünürdü. `StatusBadge`,
+/// `KpiCard` (stats_dashboard_widgets.dart) ve talep detayındaki "daha önce
+/// reddedilmiş"/"Atanmadı-Atanmış" chip'leri hep bunu kullanır — tek kaynak.
+({Color background, Color foreground}) tonalColors(BuildContext context, MaterialColor color) {
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  return isDark
+      ? (background: color.shade700, foreground: Colors.white)
+      : (background: color.shade100, foreground: color.shade900);
+}
+
 /// Talep durumunu (`requests.status`) renkli bir rozet olarak gösterir.
 /// Etiket metni, tek kaynaktan yönetilmesi için request_filters.dart'taki
-/// paylaşılan `statusLabels` map'inden geliyor; renk şeması bu ekranın
-/// (request_list_screen.dart) zaten kullandığı "Atanmadı/Atanmış" Chip'iyle
-/// aynı görsel dili (shade900 metin, shade100 arka plan) izliyor.
+/// paylaşılan `statusLabels` map'inden geliyor; renk şeması [tonalColors]
+/// ile açık/koyu temaya göre uyarlanıyor.
 class StatusBadge extends StatelessWidget {
   const StatusBadge({super.key, required this.status});
 
@@ -27,10 +42,11 @@ class StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = statusColors[status] ?? Colors.grey;
+    final tones = tonalColors(context, color);
     return Chip(
       label: Text(statusLabels[status] ?? status),
-      labelStyle: TextStyle(fontSize: 12, color: color.shade900),
-      backgroundColor: color.shade100,
+      labelStyle: TextStyle(fontSize: 12, color: tones.foreground),
+      backgroundColor: tones.background,
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       padding: EdgeInsets.zero,

@@ -1762,3 +1762,1244 @@ ALTER FUNCTION "public"."get_manager_resolution_trend"() OWNER TO "postgres";
 GRANT ALL ON FUNCTION "public"."get_manager_resolution_trend"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."get_manager_resolution_trend"() TO "service_role";
 
+
+--
+-- Görsel kimlik + profil genişletmesi (2026-07-22): profil fotoğrafı,
+-- adminin onayıyla e-posta değişikliği. KVKK notuyla aynı ilkeyle bilinçli
+-- bir kapsam kararı: e-posta değişikliği GoTrue'nun kendi "yeni adrese
+-- doğrulama linki gönder" akışına HİÇ girmiyor (o akış SMTP + gerçek bir
+-- production e-posta servisi ister) — bunun yerine kullanıcı yeni adresi
+-- talep eder, admin elle inceleyip onaylar/reddeder; onaylanınca
+-- auth.users.email + public.users.email DOĞRUDAN (postgres sahipliğiyle,
+-- security definer fonksiyon içinde) güncellenir ve email_confirmed_at
+-- admin onayının kendisi "doğrulama" sayıldığı için hemen doldurulur.
+--
+
+ALTER TABLE "public"."users" ADD COLUMN IF NOT EXISTS "avatar_url" "text";
+
+
+COMMENT ON COLUMN "public"."users"."avatar_url" IS 'avatars bucket''indeki dosya yolu (örn. "{user_id}/avatar") — NULL ise baş harf rozeti gösterilir';
+
+
+CREATE TABLE IF NOT EXISTS "public"."email_change_requests" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "current_email" "text" NOT NULL,
+    "requested_email" "text" NOT NULL,
+    "status" "text" DEFAULT 'beklemede'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "reviewed_by" "uuid",
+    "reviewed_at" timestamp with time zone,
+    CONSTRAINT "email_change_requests_status_check" CHECK (("status" = ANY (ARRAY['beklemede'::"text", 'onaylandi'::"text", 'reddedildi'::"text"])))
+);
+
+
+ALTER TABLE "public"."email_change_requests" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."email_change_requests" IS 'personel/vatandaş/müdürün talep ettiği, adminin onayladığı/reddettiği e-posta değişiklik talepleri';
+
+
+ALTER TABLE ONLY "public"."email_change_requests"
+    ADD CONSTRAINT "email_change_requests_pkey" PRIMARY KEY ("id");
+
+
+ALTER TABLE ONLY "public"."email_change_requests"
+    ADD CONSTRAINT "email_change_requests_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+
+ALTER TABLE ONLY "public"."email_change_requests"
+    ADD CONSTRAINT "email_change_requests_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "public"."users"("id") ON DELETE SET NULL;
+
+
+ALTER TABLE "public"."email_change_requests" ENABLE ROW LEVEL SECURITY;
+
+
+-- SELECT: kendi talepleri + admin hepsini görür. INSERT/UPDATE'e KASITLI
+-- olarak hiçbir permissive politika yok — tabloya yazma tamamen
+-- `request_email_change()`/`admin_review_email_change()` (security definer,
+-- postgres sahipliğiyle RLS'i bypass ediyor) üzerinden yapılıyor; bu
+-- fonksiyonlar "zaten bekleyen talep var mı", "e-posta başka birinde var mı"
+-- gibi kontrolleri tek yerde (Dart tarafına sızdırmadan) uyguluyor.
+CREATE POLICY "kendi_talebini_veya_admin_hepsini_gorebilir" ON "public"."email_change_requests" FOR SELECT USING ((("user_id" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text")));
+
+
+CREATE POLICY "pasif_kullanici_sinirlamasi_select" ON "public"."email_change_requests" AS RESTRICTIVE FOR SELECT USING ("public"."current_user_is_active"());
+
+
+GRANT ALL ON TABLE "public"."email_change_requests" TO "authenticated";
+GRANT ALL ON TABLE "public"."email_change_requests" TO "service_role";
+
+
+CREATE OR REPLACE FUNCTION "public"."request_email_change"("p_new_email" "text") RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_user_id uuid := auth.uid();
+  v_current_email text;
+  v_new_email text := lower(trim(p_new_email));
+  v_new_id uuid;
+begin
+  if v_user_id is null then
+    raise exception 'Oturum bulunamadı.';
+  end if;
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if v_new_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'Geçerli bir e-posta adresi girin.';
+  end if;
+
+  select email into v_current_email from public.users where id = v_user_id;
+  if v_new_email = lower(v_current_email) then
+    raise exception 'Yeni e-posta, mevcut e-postanızla aynı.';
+  end if;
+
+  if exists (
+    select 1 from public.email_change_requests
+    where user_id = v_user_id and status = 'beklemede'
+  ) then
+    raise exception 'Zaten onay bekleyen bir e-posta değişikliği talebiniz var.';
+  end if;
+
+  if exists (select 1 from auth.users where lower(email) = v_new_email) then
+    raise exception 'Bu e-posta adresi başka bir hesap tarafından kullanılıyor.';
+  end if;
+
+  insert into public.email_change_requests (user_id, current_email, requested_email)
+  values (v_user_id, v_current_email, v_new_email)
+  returning id into v_new_id;
+
+  return v_new_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."request_email_change"("p_new_email" "text") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."request_email_change"("p_new_email" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."request_email_change"("p_new_email" "text") TO "service_role";
+
+
+CREATE OR REPLACE FUNCTION "public"."admin_review_email_change"("p_request_id" "uuid", "p_approve" boolean) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_request record;
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+  if public.current_user_role() <> 'admin' then
+    raise exception 'Bu işlem için admin yetkisi gerekir.';
+  end if;
+
+  select * into v_request from public.email_change_requests
+  where id = p_request_id and status = 'beklemede'
+  for update;
+  if not found then
+    raise exception 'Talep bulunamadı veya zaten işleme alınmış.';
+  end if;
+
+  if p_approve then
+    if exists (select 1 from auth.users where lower(email) = lower(v_request.requested_email) and id <> v_request.user_id) then
+      raise exception 'Bu e-posta adresi başka bir hesap tarafından kullanılıyor.';
+    end if;
+
+    -- Doğrudan auth.users güncellemesi: bu proje service_role/Edge Function
+    -- altyapısına sahip değil (bkz. CLAUDE.md, Faz 4 notu) — ama security
+    -- definer fonksiyon postgres sahipliğiyle çalıştığı için auth şemasına
+    -- doğrudan erişebiliyor (handle_new_user() trigger'ıyla aynı desen).
+    -- email_confirmed_at admin onayının kendisini doğrulama saydığı için
+    -- hemen dolduruluyor — GoTrue'nun kendi "yeni adrese link gönder"
+    -- akışı burada BİLİNÇLİ olarak devre dışı.
+    update auth.users set email = v_request.requested_email, email_confirmed_at = now()
+    where id = v_request.user_id;
+
+    update public.users set email = v_request.requested_email where id = v_request.user_id;
+
+    update public.email_change_requests
+    set status = 'onaylandi', reviewed_by = auth.uid(), reviewed_at = now()
+    where id = p_request_id;
+  else
+    update public.email_change_requests
+    set status = 'reddedildi', reviewed_by = auth.uid(), reviewed_at = now()
+    where id = p_request_id;
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."admin_review_email_change"("p_request_id" "uuid", "p_approve" boolean) OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."admin_review_email_change"("p_request_id" "uuid", "p_approve" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."admin_review_email_change"("p_request_id" "uuid", "p_approve" boolean) TO "service_role";
+
+
+--
+-- Storage: avatars bucket'ı (private) + storage.objects RLS. Yol kuralı:
+-- "{user_id}/avatar" (uzantısız, sabit ad) — her yeniden yüklemede aynı
+-- yolun üzerine yazılır (`upsert: true`), böylece eski dosya/format
+-- değişse de tek bir dosya kalır ve `users.avatar_url` her zaman aynı yolu
+-- gösterir.
+--
+
+INSERT INTO "storage"."buckets" ("id", "name", "public", "file_size_limit", "allowed_mime_types")
+VALUES (
+  'avatars',
+  'avatars',
+  false,
+  5242880,
+  ARRAY['image/jpeg', 'image/png', 'image/webp']
+)
+ON CONFLICT ("id") DO NOTHING;
+
+
+CREATE POLICY "kendi_avatarini_veya_admin_hepsini_gorebilir" ON "storage"."objects" FOR SELECT USING ((("bucket_id" = 'avatars'::"text") AND ((("storage"."foldername"("name"))[1] = ("auth"."uid"())::"text") OR ("public"."current_user_role"() = 'admin'::"text"))));
+
+
+CREATE POLICY "kendi_avatarini_yukleyebilir" ON "storage"."objects" FOR INSERT WITH CHECK ((("bucket_id" = 'avatars'::"text") AND (("storage"."foldername"("name"))[1] = ("auth"."uid"())::"text")));
+
+
+CREATE POLICY "kendi_avatarini_guncelleyebilir" ON "storage"."objects" FOR UPDATE USING ((("bucket_id" = 'avatars'::"text") AND (("storage"."foldername"("name"))[1] = ("auth"."uid"())::"text")));
+
+
+CREATE POLICY "kendi_avatarini_silebilir" ON "storage"."objects" FOR DELETE USING ((("bucket_id" = 'avatars'::"text") AND (("storage"."foldername"("name"))[1] = ("auth"."uid"())::"text")));
+
+
+--
+-- Faz 6 (2026-07-23) — Puanlama, talebi yeniden açma, talep geçmişi.
+--
+-- Kullanıcıyla netleşen kararlar: (1) yeniden açma yetkisi sadece talebi
+-- açan kişi + admin'de (müdür yok); (2) yeniden açılan talep atanmamış
+-- duruma döner, müdür yeniden atar; (3) puanlama sadece giriş yapmış talep
+-- sahibi için (anonim talepler kapsam dışı — hesapsız oldukları için
+-- kimlik doğrulaması/tekrar puanlama engeli yok); (4) ortalama puan hem
+-- personelin kendi profilinde hem müdürün "Ata" ekranında hem admin'in
+-- Kullanıcı Yönetimi'nde hem admin dashboard'unda birim bazlı grafikte
+-- gösterilecek.
+--
+-- Mimari kararlar:
+-- - `results.request_id` UNIQUE olduğu için (bkz. tablo tanımı) bir talep
+--   aynı anda sadece TEK aktif rapora sahip olabiliyor; yeniden açma bu
+--   satırı SİLİYOR (önce request_history'ye rapor metni + o anki personel
+--   ADI anlık görüntü olarak yazılıyor, sonra silme yapılıyor) — böylece
+--   personel yeniden "Çözümle" ile SIFIRDAN rapor girebiliyor (INSERT'i
+--   engelleyen UNIQUE ihlali oluşmuyor).
+-- - `request_ratings.request_id` da UNIQUE — bir talep için her zaman TEK
+--   aktif puan tutulur; talep yeniden açılıp tekrar onaylanırsa açan kişi
+--   yeniden puanlayabilir (upsert), bu ESKİ puanın (ve eski personelin buna
+--   katkısının) üzerine yazar. Bilinçli bir basitleştirme: geçmiş
+--   döngülerin puanı ayrı ayrı SAKLANMIYOR, sadece EN GÜNCEL puan sayılıyor
+--   (Trendyol tarzı ortalamalar `avg(rating) group by personnel_id` ile CANLI
+--   hesaplanıyor, ayrı bir "ortalama" sütunu hiçbir yerde TUTULMUYOR).
+-- - `request_history`: personel/müdür/admin ekranlarında gösterilecek genel
+--   zaman çizelgesi. GİZLİLİK KARARI: `acan_kisi_kendi_talebini_gorebilir`
+--   RLS deseninde olduğu gibi, personel/müdür bir VATANDAŞIN `users`
+--   satırını göremiyor (sadece admin görebiliyor) — bu yüzden vatandaş/
+--   anonim aksiyonlarının (created/reopened/rated) `actor_label`'ı YAZMA
+--   ANINDA sabit bir Türkçe etiketle ("Talebi açan kişi") dolduruluyor,
+--   personel işlemlerinde (assigned/resolved/approved/rejected/
+--   department_changed) ise gerçek ad YAZMA ANINDA (security definer
+--   fonksiyon/trigger içinde, RLS'i bypass ederek) `users` tablosundan OKUNUP
+--   metne GÖMÜLÜYOR. Böylece Flutter tarafı OKUMA anında `users` tablosuna
+--   hiç join YAPMIYOR — hem RLS sızıntısı riski hem "kullanıcı silinmiş/adı
+--   değişmiş" tutarsızlığı olmuyor (tarihsel an itibariyle doğru kalıyor).
+--
+
+--
+-- request_ratings — açan kişinin, onaylanmış bir talebi 5 yıldız üzerinden
+-- değerlendirmesi. personnel_id, puanlama ANINDA results.resolved_by'dan
+-- ANLIK GÖRÜNTÜ olarak alınır (results satırı ileride silinse/değişse bile
+-- kimin puanlandığı sabit kalsın diye).
+--
+CREATE TABLE IF NOT EXISTS "public"."request_ratings" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "personnel_id" "uuid" NOT NULL,
+    "rated_by" "uuid" NOT NULL,
+    "rating" smallint NOT NULL,
+    "comment" "text",
+    CONSTRAINT "request_ratings_rating_check" CHECK ((("rating" >= 1) AND ("rating" <= 5)))
+);
+
+
+ALTER TABLE "public"."request_ratings" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."request_ratings" IS 'açan kişinin onaylanmış talebe verdiği 1-5 yıldız puan; personel ortalama puanı bu tablodan canlı hesaplanır';
+
+
+ALTER TABLE ONLY "public"."request_ratings"
+    ADD CONSTRAINT "request_ratings_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."request_ratings"
+    ADD CONSTRAINT "request_ratings_request_id_key" UNIQUE ("request_id");
+
+ALTER TABLE ONLY "public"."request_ratings"
+    ADD CONSTRAINT "request_ratings_request_id_fkey" FOREIGN KEY ("request_id") REFERENCES "public"."requests"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."request_ratings"
+    ADD CONSTRAINT "request_ratings_personnel_id_fkey" FOREIGN KEY ("personnel_id") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."request_ratings"
+    ADD CONSTRAINT "request_ratings_rated_by_fkey" FOREIGN KEY ("rated_by") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE "public"."request_ratings" ENABLE ROW LEVEL SECURITY;
+
+-- Puanlayan kendi verdiği puanı, puanlanan personel kendi hakkındaki
+-- puanları, müdür kendi biriminin personeli hakkındaki puanları, admin
+-- hepsini görebilir. INSERT/UPDATE için BİLİNÇLİ olarak hiçbir politika YOK
+-- — tek yazma yolu aşağıdaki `rate_request()` (security definer) RPC'si.
+CREATE POLICY "puan_gorebilenler" ON "public"."request_ratings" FOR SELECT TO "authenticated" USING ((
+    ("rated_by" = "auth"."uid"())
+    OR ("personnel_id" = "auth"."uid"())
+    OR ("public"."current_user_role"() = 'admin'::"text")
+    OR (("public"."current_user_role"() = 'mudur'::"text") AND (EXISTS ( SELECT 1 FROM "public"."users" "u" WHERE (("u"."id" = "request_ratings"."personnel_id") AND ("u"."department_id" = "public"."current_user_department"())))))
+));
+
+CREATE POLICY "pasif_kullanici_sinirlamasi_select" ON "public"."request_ratings" AS RESTRICTIVE FOR SELECT TO "authenticated" USING ((("rated_by" = "auth"."uid"()) OR ("personnel_id" = "auth"."uid"()) OR "public"."current_user_is_active"()));
+
+
+--
+-- request_history — personel/müdür/admin ekranlarında gösterilen, bir
+-- talebin başından beri geçirdiği tüm aşamaların salt-okunur günlüğü.
+-- Yazma yolu YOK (hiçbir INSERT/UPDATE/DELETE politikası tanımlanmadı) —
+-- sadece aşağıdaki trigger'lar/RPC'ler (security definer, tablo sahibi
+-- postgres) satır ekleyebiliyor.
+--
+CREATE TABLE IF NOT EXISTS "public"."request_history" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "actor_id" "uuid",
+    "actor_label" "text" NOT NULL,
+    "detail" "jsonb",
+    CONSTRAINT "request_history_event_type_check" CHECK (("event_type" = ANY (ARRAY['created'::"text", 'assigned'::"text", 'department_changed'::"text", 'resolved'::"text", 'report_resubmitted'::"text", 'approved'::"text", 'rejected'::"text", 'reopened'::"text", 'rated'::"text"])))
+);
+
+
+ALTER TABLE "public"."request_history" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."request_history" IS 'bir talebin zaman çizelgesi (oluşturma/atama/çözüm/onay/red/yeniden açma/puanlama) — sadece personel/müdür/admin ekranlarında gösterilir';
+
+
+ALTER TABLE ONLY "public"."request_history"
+    ADD CONSTRAINT "request_history_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."request_history"
+    ADD CONSTRAINT "request_history_request_id_fkey" FOREIGN KEY ("request_id") REFERENCES "public"."requests"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."request_history"
+    ADD CONSTRAINT "request_history_actor_id_fkey" FOREIGN KEY ("actor_id") REFERENCES "public"."users"("id") ON DELETE SET NULL;
+
+ALTER TABLE "public"."request_history" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "gorebilen_calisanlar_gecmisi_gorebilir" ON "public"."request_history" FOR SELECT TO "authenticated" USING ((
+    ("public"."current_user_role"() = ANY (ARRAY['personel'::"text", 'mudur'::"text", 'admin'::"text"]))
+    AND (EXISTS ( SELECT 1 FROM "public"."requests" "r" WHERE (("r"."id" = "request_history"."request_id") AND (
+        ("r"."assigned_to" = "auth"."uid"())
+        OR (("public"."current_user_role"() = 'mudur'::"text") AND (NOT ("r"."department_id" IS DISTINCT FROM "public"."current_user_department"())))
+        OR ("public"."current_user_role"() = 'admin'::"text")
+    ))))
+));
+
+CREATE POLICY "pasif_kullanici_sinirlamasi_select" ON "public"."request_history" AS RESTRICTIVE FOR SELECT TO "authenticated" USING ("public"."current_user_is_active"());
+
+
+--
+-- requests.reopened_count — kaç kez yeniden açıldığını gösteren basit bir
+-- sayaç (previously_rejected'daki boolean deseninin sayaç versiyonu);
+-- request_detail_screen.dart'ta "Bu talep daha önce N kez yeniden açılmıştı"
+-- rozeti için kullanılıyor.
+--
+ALTER TABLE "public"."requests"
+    ADD COLUMN IF NOT EXISTS "reopened_count" integer DEFAULT 0 NOT NULL;
+
+
+--
+-- log_request_created() — bir talep oluşturulduğunda request_history'ye
+-- 'created' olayını ekler. actor_label gizlilik kuralına uyar (bkz. yukarı):
+-- vatandaş/anonim için sabit etiket, personelin kendi açtığı talepte gerçek
+-- ad (personel zaten meslektaşlarına görünür bir kimlik).
+--
+CREATE OR REPLACE FUNCTION "public"."log_request_created"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_actor_label text;
+begin
+  v_actor_label := case
+    when new.created_by is null then 'Anonim'
+    when new.requester_type = 'personel' then coalesce((select full_name from public.users where id = new.created_by), 'Personel')
+    else 'Talebi açan kişi'
+  end;
+
+  insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+  values (new.id, 'created', new.created_by, v_actor_label, jsonb_build_object('title', new.title));
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."log_request_created"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE TRIGGER "log_request_created_after_insert" AFTER INSERT ON "public"."requests" FOR EACH ROW EXECUTE FUNCTION "public"."log_request_created"();
+
+
+--
+-- log_request_assigned() — müdürün bir talebi bir personele ATANMASINI
+-- (assigned_to null'dan bir değere veya bir değerden başka bir değere
+-- değiştiğinde) 'assigned' olayı olarak kaydeder. `reassign_request_department`
+-- RPC'sinin assigned_to'yu NULL'a sıfırlamasında (yeni_deger IS NULL)
+-- bilinçli olarak TETİKLENMEZ — o durum ayrıca 'department_changed' olarak
+-- kaydediliyor.
+--
+CREATE OR REPLACE FUNCTION "public"."log_request_assigned"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_actor_label text;
+  v_personnel_name text;
+begin
+  if new.assigned_to is distinct from old.assigned_to and new.assigned_to is not null then
+    v_actor_label := coalesce((select full_name from public.users where id = auth.uid()), 'Müdür');
+    v_personnel_name := coalesce((select full_name from public.users where id = new.assigned_to), 'Personel');
+
+    insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+    values (new.id, 'assigned', auth.uid(), v_actor_label, jsonb_build_object('personnel_id', new.assigned_to, 'personnel_name', v_personnel_name));
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."log_request_assigned"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE TRIGGER "log_request_assigned_after_update" AFTER UPDATE OF "assigned_to" ON "public"."requests" FOR EACH ROW EXECUTE FUNCTION "public"."log_request_assigned"();
+
+
+--
+-- log_result_resolved() — personelin İLK raporu gönderdiği an ('resolved').
+-- Sonraki düzenlemeler/yeniden gönderimler aşağıdaki log_result_updated()
+-- tarafından 'report_resubmitted' olarak ayrıca kaydedilir.
+--
+CREATE OR REPLACE FUNCTION "public"."log_result_resolved"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_actor_label text;
+begin
+  v_actor_label := coalesce((select full_name from public.users where id = new.resolved_by), 'Personel');
+
+  insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+  values (new.request_id, 'resolved', new.resolved_by, v_actor_label, jsonb_build_object('report_text', new.report_text));
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."log_result_resolved"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE TRIGGER "log_result_resolved_after_insert" AFTER INSERT ON "public"."results" FOR EACH ROW EXECUTE FUNCTION "public"."log_result_resolved"();
+
+
+--
+-- log_result_updated() — raporun onay durumu değiştiğinde ('approved'/
+-- 'rejected') veya rapor metni değiştiğinde ('report_resubmitted', hem
+-- redden sonra yeniden gönderimi hem onay beklerken düzenlemeyi kapsar)
+-- ayrı ayrı olaylar ekler. İkisi de AYNI UPDATE'te değişebileceği için
+-- (ör. red sonrası düzenleme approval_status'u da beklemede'ye çeker)
+-- bağımsız `if`ler kullanılıyor (elsif DEĞİL) — biri diğerini engellemesin.
+--
+CREATE OR REPLACE FUNCTION "public"."log_result_updated"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_actor_label text;
+begin
+  if new.approval_status = 'onaylandi' and old.approval_status is distinct from 'onaylandi' then
+    v_actor_label := coalesce((select full_name from public.users where id = new.approved_by), 'Müdür');
+    insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+    values (new.request_id, 'approved', new.approved_by, v_actor_label, null);
+  end if;
+
+  if new.approval_status = 'reddedildi' and old.approval_status is distinct from 'reddedildi' then
+    v_actor_label := coalesce((select full_name from public.users where id = new.approved_by), 'Müdür');
+    insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+    values (new.request_id, 'rejected', new.approved_by, v_actor_label, null);
+  end if;
+
+  if new.report_text is distinct from old.report_text then
+    v_actor_label := coalesce((select full_name from public.users where id = new.resolved_by), 'Personel');
+    insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+    values (new.request_id, 'report_resubmitted', new.resolved_by, v_actor_label, jsonb_build_object('report_text', new.report_text));
+  end if;
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."log_result_updated"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE TRIGGER "log_result_updated_after_update" AFTER UPDATE ON "public"."results" FOR EACH ROW EXECUTE FUNCTION "public"."log_result_updated"();
+
+
+--
+-- reopen_request() — onaylanmış (sonuçlandırılmış) bir talebi açan kişi
+-- veya admin yeniden açabilir ("sonradan tekrar sorun çıkabilir" senaryosu).
+-- Kullanıcı kararı: sadece açan kişi + admin (müdür YOK); atama sıfırlanır,
+-- müdür yeniden atar. Mevcut rapor, silinmeden ÖNCE request_history'ye
+-- anlık görüntü olarak yazılır (bkz. dosya başındaki mimari not).
+--
+CREATE OR REPLACE FUNCTION "public"."reopen_request"("p_request_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_request record;
+  v_result record;
+  v_actor_label text;
+  v_notified_count int;
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+
+  select * into v_request from public.requests where id = p_request_id for update;
+  if not found then
+    raise exception 'Talep bulunamadı.';
+  end if;
+
+  if v_request.status <> 'onaylandi' then
+    raise exception 'Sadece onaylanmış (sonuçlandırılmış) talepler yeniden açılabilir.';
+  end if;
+
+  if not ((v_request.created_by = auth.uid()) or (public.current_user_role() = 'admin')) then
+    raise exception 'Bu talebi yeniden açma yetkiniz yok.';
+  end if;
+
+  select * into v_result from public.results where request_id = p_request_id;
+
+  v_actor_label := case
+    when public.current_user_role() = 'admin' then coalesce((select full_name from public.users where id = auth.uid()), 'Admin')
+    else 'Talebi açan kişi'
+  end;
+
+  insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+  values (
+    p_request_id, 'reopened', auth.uid(), v_actor_label,
+    case when v_result is null then null else jsonb_build_object(
+      'previous_report_text', v_result.report_text,
+      'previous_personnel_name', (select full_name from public.users where id = v_result.resolved_by)
+    ) end
+  );
+
+  delete from public.results where request_id = p_request_id;
+
+  update public.requests
+  set status = 'acik',
+      assigned_to = null,
+      resolved_at = null,
+      sla_notified_at = null,
+      reopened_count = reopened_count + 1
+  where id = p_request_id;
+
+  insert into public.notifications (user_id, request_id, message)
+  select u.id, p_request_id, format('"%s" başlıklı talep, açan kişi tarafından yeniden açıldı.', v_request.title)
+  from public.users u
+  where u.department_id = v_request.department_id and u.role = 'mudur' and u.is_active;
+
+  get diagnostics v_notified_count = row_count;
+
+  if v_notified_count = 0 then
+    insert into public.notifications (user_id, request_id, message)
+    select u.id, p_request_id, format('"%s" başlıklı talep yeniden açıldı. (Birimde aktif müdür bulunamadı.)', v_request.title)
+    from public.users u
+    where u.role = 'admin' and u.is_active;
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."reopen_request"("p_request_id" "uuid") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."reopen_request"("p_request_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."reopen_request"("p_request_id" "uuid") TO "service_role";
+
+
+--
+-- rate_request() — sadece talebin (giriş yapmış) açan kişisi, 'onaylandi'
+-- durumundaki bir talebi 1-5 yıldız + opsiyonel yorum ile puanlar.
+-- personnel_id, o anki results.resolved_by'dan ANLIK GÖRÜNTÜ alınır (bkz.
+-- dosya başındaki mimari not). Upsert: aynı talep tekrar puanlanırsa
+-- (ör. yeniden açılıp tekrar onaylandıktan sonra) ESKİ puanın üzerine yazar.
+--
+CREATE OR REPLACE FUNCTION "public"."rate_request"("p_request_id" "uuid", "p_rating" smallint, "p_comment" "text" DEFAULT NULL) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_request record;
+  v_personnel_id uuid;
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+
+  if p_rating < 1 or p_rating > 5 then
+    raise exception 'Puan 1 ile 5 arasında olmalıdır.';
+  end if;
+
+  select * into v_request from public.requests where id = p_request_id;
+  if not found then
+    raise exception 'Talep bulunamadı.';
+  end if;
+
+  if v_request.created_by is distinct from auth.uid() then
+    raise exception 'Sadece talebi açan kişi puanlayabilir.';
+  end if;
+
+  if v_request.status <> 'onaylandi' then
+    raise exception 'Sadece onaylanmış (sonuçlandırılmış) talepler puanlanabilir.';
+  end if;
+
+  select resolved_by into v_personnel_id from public.results where request_id = p_request_id;
+  if v_personnel_id is null then
+    raise exception 'Bu talep için bir çözüm raporu bulunamadı.';
+  end if;
+
+  insert into public.request_ratings (request_id, personnel_id, rated_by, rating, comment, updated_at)
+  values (p_request_id, v_personnel_id, auth.uid(), p_rating, p_comment, now())
+  on conflict (request_id) do update
+    set personnel_id = excluded.personnel_id,
+        rating = excluded.rating,
+        comment = excluded.comment,
+        updated_at = now();
+
+  insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+  values (p_request_id, 'rated', auth.uid(), 'Talebi açan kişi', jsonb_build_object('rating', p_rating, 'comment', p_comment));
+end;
+$$;
+
+
+ALTER FUNCTION "public"."rate_request"("p_request_id" "uuid", "p_rating" smallint, "p_comment" "text") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."rate_request"("p_request_id" "uuid", "p_rating" smallint, "p_comment" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."rate_request"("p_request_id" "uuid", "p_rating" smallint, "p_comment" "text") TO "service_role";
+
+
+--
+-- reassign_request_department()'ın yeniden tanımı (orijinali satır 1377'de,
+-- dosyanın geri kalanındaki desene uygun olarak orijinal DOKUNULMADAN
+-- bırakıldı — bu proje migration dosyasını append-only kronolojik bir günlük
+-- olarak tutuyor, en son CREATE OR REPLACE kazanır). Tek fark: artık
+-- request_history'ye 'department_changed' olayı da ekliyor.
+--
+CREATE OR REPLACE FUNCTION "public"."reassign_request_department"("p_request_id" "uuid", "p_new_department_id" bigint) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_request record;
+  v_target_department record;
+  v_old_department_name text;
+  v_actor_label text;
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+
+  select * into v_request from public.requests where id = p_request_id for update;
+  if not found then
+    raise exception 'Talep bulunamadı.';
+  end if;
+
+  if v_request.status <> 'acik' then
+    raise exception 'Sadece açık durumdaki talepler başka birime yönlendirilebilir.';
+  end if;
+
+  if public.current_user_role() = 'admin' then
+    null;
+  elsif public.current_user_role() = 'mudur' and public.current_user_department() = v_request.department_id then
+    null;
+  else
+    raise exception 'Bu talebi yönlendirme yetkiniz yok.';
+  end if;
+
+  select * into v_target_department from public.departments where id = p_new_department_id;
+  if not found then
+    raise exception 'Hedef birim bulunamadı.';
+  end if;
+  if not v_target_department.is_active then
+    raise exception 'Hedef birim pasif, talep yönlendirilemez.';
+  end if;
+  if p_new_department_id = v_request.department_id then
+    raise exception 'Talep zaten bu birimde.';
+  end if;
+
+  select name into v_old_department_name from public.departments where id = v_request.department_id;
+
+  update public.requests
+  set department_id = p_new_department_id, assigned_to = null
+  where id = p_request_id;
+
+  insert into public.request_department_reassignments
+    (request_id, old_department_id, new_department_id, reassigned_by)
+  values (p_request_id, v_request.department_id, p_new_department_id, auth.uid());
+
+  v_actor_label := coalesce((select full_name from public.users where id = auth.uid()), 'Yetkili');
+  insert into public.request_history (request_id, event_type, actor_id, actor_label, detail)
+  values (
+    p_request_id, 'department_changed', auth.uid(), v_actor_label,
+    jsonb_build_object('old_department_name', v_old_department_name, 'new_department_name', v_target_department.name)
+  );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."reassign_request_department"("p_request_id" "uuid", "p_new_department_id" bigint) OWNER TO "postgres";
+
+
+--
+-- get_personnel_ratings() — çağıranın rolüne göre görebileceği personelin
+-- (kendi rolü personel ise sadece kendisi, müdürse kendi biriminin
+-- personeli, admin ise TÜM personel) ortalama puanı + puan sayısı.
+-- LEFT JOIN request_ratings — hiç puanı olmayan personel de (avg_rating
+-- null, rating_count 0) listede görünsün diye (Ata ekranında/Kullanıcı
+-- Yönetimi'nde "henüz puan yok" gösterebilmek için).
+--
+CREATE OR REPLACE FUNCTION "public"."get_personnel_ratings"() RETURNS TABLE(
+    "personnel_id" "uuid",
+    "department_id" bigint,
+    "department_name" "text",
+    "avg_rating" numeric,
+    "rating_count" bigint
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+begin
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, bu işlemi yapamazsınız.';
+  end if;
+
+  if public.current_user_role() = 'personel' then
+    return query
+    select u.id, u.department_id, d.name, avg(rr.rating), count(rr.*)::bigint
+    from public.users u
+    left join public.departments d on d.id = u.department_id
+    left join public.request_ratings rr on rr.personnel_id = u.id
+    where u.id = auth.uid()
+    group by u.id, u.department_id, d.name;
+  elsif public.current_user_role() = 'mudur' then
+    return query
+    select u.id, u.department_id, d.name, avg(rr.rating), count(rr.*)::bigint
+    from public.users u
+    left join public.departments d on d.id = u.department_id
+    left join public.request_ratings rr on rr.personnel_id = u.id
+    where u.role = 'personel' and u.department_id = public.current_user_department()
+    group by u.id, u.department_id, d.name;
+  elsif public.current_user_role() = 'admin' then
+    return query
+    select u.id, u.department_id, d.name, avg(rr.rating), count(rr.*)::bigint
+    from public.users u
+    left join public.departments d on d.id = u.department_id
+    left join public.request_ratings rr on rr.personnel_id = u.id
+    where u.role = 'personel'
+    group by u.id, u.department_id, d.name;
+  else
+    raise exception 'Bu işlem için yetkiniz yok.';
+  end if;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_personnel_ratings"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_personnel_ratings"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_personnel_ratings"() TO "service_role";
+
+
+--
+-- ============================================================================
+-- Faz 7 (2026-07-23) — Kurum-içi DM (özel mesajlaşma): personel ↔ kendi birim
+-- müdürü, müdür ↔ admin. Kararlar (kullanıcıyla `AskQuestion` ile netleşti):
+-- personel SADECE kendi biriminin müdürüyle konuşabilir; müdür, birden fazla
+-- admin varsa mesaj başlatırken hangi admin'le konuşacağını seçer (liste);
+-- vatandaş DM kapsamı DIŞINDA. Etiketleme (bir talebi mesaja iliştirme) ve
+-- beğeni (kalp ikonu, her iki taraf da açıp kapatabilir) de bu fazın parçası.
+--
+-- Tasarım notu: `users` tablosunun normal RLS'i ("kendi profili + müdür kendi
+-- biriminin personeli + admin herkes") personelin müdürünü, müdürün
+-- admin'leri GÖRMESİNE izin vermiyor (bu roller birbirinin "personeli" değil).
+-- Bu yüzden kişi listesi (`get_dm_contacts`) ve konuşma listesi
+-- (`get_my_dm_conversations`) `SECURITY DEFINER` — `get_personnel_ratings()`
+-- ile AYNI gerekçe.
+-- ============================================================================
+--
+
+--
+-- dm_conversations — iki kullanıcı arasındaki TEK konuşma. Yinelenen
+-- konuşma oluşmasın diye participant_a/participant_b HER ZAMAN sıralı
+-- (participant_a < participant_b) tutulur — hem CHECK kısıtlamasıyla hem
+-- aşağıdaki `get_or_create_dm_conversation()` RPC'sinin sıralama mantığıyla
+-- çift güvenceli. Okundu takibi için katılımcı başına ayrı `last_read_at`
+-- sütunu (mesaj başına okundu-bilgisi YOK, basit tutuluyor).
+--
+CREATE TABLE IF NOT EXISTS "public"."dm_conversations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "last_message_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "participant_a" "uuid" NOT NULL,
+    "participant_b" "uuid" NOT NULL,
+    "participant_a_last_read_at" timestamp with time zone,
+    "participant_b_last_read_at" timestamp with time zone,
+    CONSTRAINT "dm_conversations_ordered_check" CHECK (("participant_a" < "participant_b"))
+);
+
+
+ALTER TABLE "public"."dm_conversations" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."dm_conversations" IS 'personel↔müdür / müdür↔admin arası 1:1 DM konuşması; katılımcılar her zaman participant_a < participant_b sıralı tutulur';
+
+
+ALTER TABLE ONLY "public"."dm_conversations"
+    ADD CONSTRAINT "dm_conversations_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."dm_conversations"
+    ADD CONSTRAINT "dm_conversations_unique_pair" UNIQUE ("participant_a", "participant_b");
+
+ALTER TABLE ONLY "public"."dm_conversations"
+    ADD CONSTRAINT "dm_conversations_participant_a_fkey" FOREIGN KEY ("participant_a") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."dm_conversations"
+    ADD CONSTRAINT "dm_conversations_participant_b_fkey" FOREIGN KEY ("participant_b") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE "public"."dm_conversations" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "katilimci_konusmasini_gorebilir" ON "public"."dm_conversations" FOR SELECT TO "authenticated" USING ((
+    ("participant_a" = "auth"."uid"())
+    OR ("participant_b" = "auth"."uid"())
+    OR ("public"."current_user_role"() = 'admin'::"text")
+));
+
+CREATE POLICY "pasif_kullanici_sinirlamasi_select" ON "public"."dm_conversations" AS RESTRICTIVE FOR SELECT TO "authenticated" USING ((("participant_a" = "auth"."uid"()) OR ("participant_b" = "auth"."uid"()) OR "public"."current_user_is_active"()));
+
+-- Yazma (yeni konuşma oluşturma) yolu BİLİNÇLİ olarak yok — tek yol aşağıdaki
+-- `get_or_create_dm_conversation()` (security definer) RPC'si, çünkü hangi rol
+-- kombinasyonunun konuşabileceği (personel↔kendi müdürü, müdür↔admin) sade bir
+-- RLS `with check`'iyle ifade edilemeyecek kadar çapraz-tablo mantığı içeriyor.
+
+
+--
+-- dm_messages — bir konuşmadaki tek mesaj. `tagged_request_id` doluysa mesaj
+-- balonunda altı çizili bir bağlantı olarak gösterilip tıklanınca talep
+-- detayı açılır (2026-07-23 "index seçeneğiyle etiketleme" isteği).
+--
+CREATE TABLE IF NOT EXISTS "public"."dm_messages" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "conversation_id" "uuid" NOT NULL,
+    "sender_id" "uuid",
+    "body" "text" NOT NULL,
+    "tagged_request_id" "uuid",
+    CONSTRAINT "dm_messages_body_not_empty" CHECK (("length"(TRIM(BOTH FROM "body")) > 0))
+);
+
+
+ALTER TABLE "public"."dm_messages" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."dm_messages" IS 'DM konuşmasındaki tek mesaj; tagged_request_id doluysa mesajda bir talebe tıklanabilir referans var';
+
+
+ALTER TABLE ONLY "public"."dm_messages"
+    ADD CONSTRAINT "dm_messages_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."dm_messages"
+    ADD CONSTRAINT "dm_messages_conversation_id_fkey" FOREIGN KEY ("conversation_id") REFERENCES "public"."dm_conversations"("id") ON DELETE CASCADE;
+
+-- sender_id ON DELETE SET NULL — personnel_invites.created_by/used_by ile AYNI
+-- gerekçe: gönderen hesabı silinse bile mesaj geçmişi (ve karşı tarafın
+-- okuduğu içerik) kaybolmasın.
+ALTER TABLE ONLY "public"."dm_messages"
+    ADD CONSTRAINT "dm_messages_sender_id_fkey" FOREIGN KEY ("sender_id") REFERENCES "public"."users"("id") ON DELETE SET NULL;
+
+ALTER TABLE ONLY "public"."dm_messages"
+    ADD CONSTRAINT "dm_messages_tagged_request_id_fkey" FOREIGN KEY ("tagged_request_id") REFERENCES "public"."requests"("id") ON DELETE SET NULL;
+
+ALTER TABLE "public"."dm_messages" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "katilimci_mesajlari_gorebilir" ON "public"."dm_messages" FOR SELECT TO "authenticated" USING ((
+    EXISTS ( SELECT 1 FROM "public"."dm_conversations" "c" WHERE (("c"."id" = "dm_messages"."conversation_id") AND (("c"."participant_a" = "auth"."uid"()) OR ("c"."participant_b" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text"))))
+));
+
+CREATE POLICY "pasif_kullanici_sinirlamasi_select" ON "public"."dm_messages" AS RESTRICTIVE FOR SELECT TO "authenticated" USING ((
+    "public"."current_user_is_active"()
+    OR (EXISTS ( SELECT 1 FROM "public"."dm_conversations" "c" WHERE (("c"."id" = "dm_messages"."conversation_id") AND (("c"."participant_a" = "auth"."uid"()) OR ("c"."participant_b" = "auth"."uid"())))))
+));
+
+-- Mesaj gönderme RLS ÜZERİNDEN yapılıyor (rate_request/reopen_request'in
+-- aksine — burada tekil bir INSERT dışında cross-row mantık yok, RPC'ye gerek
+-- yok): gönderen kendisi olmalı, aktif olmalı, ve konuşmanın katılımcısı
+-- olmalı.
+CREATE POLICY "katilimci_mesaj_gonderebilir" ON "public"."dm_messages" FOR INSERT TO "authenticated" WITH CHECK ((
+    ("sender_id" = "auth"."uid"())
+    AND "public"."current_user_is_active"()
+    AND (EXISTS ( SELECT 1 FROM "public"."dm_conversations" "c" WHERE (("c"."id" = "dm_messages"."conversation_id") AND (("c"."participant_a" = "auth"."uid"()) OR ("c"."participant_b" = "auth"."uid"())))))
+));
+
+
+--
+-- dm_message_likes — bir mesajı "beğenme" (kalp ikonu). Her iki taraf da
+-- (sadece kendi göndermediği mesajlarla sınırlı olmadan) beğenip geri
+-- alabilir (2026-07-23 kararı). (message_id, user_id) PK'sı = toggle
+-- (INSERT = beğen, DELETE = beğeniyi kaldır), aynı kullanıcı bir mesajı
+-- birden çok kez beğenemez.
+--
+CREATE TABLE IF NOT EXISTS "public"."dm_message_likes" (
+    "message_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."dm_message_likes" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."dm_message_likes" IS 'bir DM mesajını beğenen kullanıcılar (toggle); konuşmadaki her iki taraf da beğenebilir';
+
+
+ALTER TABLE ONLY "public"."dm_message_likes"
+    ADD CONSTRAINT "dm_message_likes_pkey" PRIMARY KEY ("message_id", "user_id");
+
+ALTER TABLE ONLY "public"."dm_message_likes"
+    ADD CONSTRAINT "dm_message_likes_message_id_fkey" FOREIGN KEY ("message_id") REFERENCES "public"."dm_messages"("id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "public"."dm_message_likes"
+    ADD CONSTRAINT "dm_message_likes_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+ALTER TABLE "public"."dm_message_likes" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "katilimci_begenileri_gorebilir" ON "public"."dm_message_likes" FOR SELECT TO "authenticated" USING ((
+    EXISTS ( SELECT 1 FROM ("public"."dm_messages" "m" JOIN "public"."dm_conversations" "c" ON (("c"."id" = "m"."conversation_id"))) WHERE (("m"."id" = "dm_message_likes"."message_id") AND (("c"."participant_a" = "auth"."uid"()) OR ("c"."participant_b" = "auth"."uid"()) OR ("public"."current_user_role"() = 'admin'::"text"))))
+));
+
+CREATE POLICY "katilimci_begenebilir" ON "public"."dm_message_likes" FOR INSERT TO "authenticated" WITH CHECK ((
+    ("user_id" = "auth"."uid"())
+    AND "public"."current_user_is_active"()
+    AND (EXISTS ( SELECT 1 FROM ("public"."dm_messages" "m" JOIN "public"."dm_conversations" "c" ON (("c"."id" = "m"."conversation_id"))) WHERE (("m"."id" = "dm_message_likes"."message_id") AND (("c"."participant_a" = "auth"."uid"()) OR ("c"."participant_b" = "auth"."uid"())))))
+));
+
+CREATE POLICY "kendi_begenisini_kaldirabilir" ON "public"."dm_message_likes" FOR DELETE TO "authenticated" USING (("user_id" = "auth"."uid"()));
+
+
+--
+-- notifications.request_id artık DM bildirimleri için NULL olabilir; yeni
+-- conversation_id sütunu, bildirime tıklanınca hangi DM ekranının
+-- açılacağını belirtir (`notifications_screen.dart` her iki alanı da kontrol
+-- edecek şekilde güncellendi).
+--
+ALTER TABLE "public"."notifications" ALTER COLUMN "request_id" DROP NOT NULL;
+
+ALTER TABLE "public"."notifications" ADD COLUMN IF NOT EXISTS "conversation_id" "uuid";
+
+ALTER TABLE ONLY "public"."notifications"
+    ADD CONSTRAINT "notifications_conversation_id_fkey" FOREIGN KEY ("conversation_id") REFERENCES "public"."dm_conversations"("id") ON DELETE CASCADE;
+
+
+--
+-- get_dm_contacts() — çağıranın rolüne göre "kiminle yeni konuşma
+-- başlatabilir" listesini döndürür. Pasif (is_active=false) kullanıcılar
+-- listeye hiç girmez.
+--
+CREATE OR REPLACE FUNCTION "public"."get_dm_contacts"() RETURNS TABLE("user_id" "uuid", "full_name" "text", "role" "text", "avatar_url" "text")
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_role text;
+  v_dept bigint;
+begin
+  if auth.uid() is null then
+    raise exception 'Giriş yapmanız gerekiyor.';
+  end if;
+
+  select u.role, u.department_id into v_role, v_dept from public.users u where u.id = auth.uid();
+
+  if v_role = 'personel' then
+    return query
+      select u.id, u.full_name, u.role, u.avatar_url
+      from public.users u
+      where u.role = 'mudur' and u.is_active and (u.department_id is not distinct from v_dept)
+      order by u.full_name;
+  elsif v_role = 'mudur' then
+    return query
+      select u.id, u.full_name, u.role, u.avatar_url
+      from public.users u
+      where u.is_active and (
+        (u.role = 'personel' and (u.department_id is not distinct from v_dept))
+        or u.role = 'admin'
+      )
+      order by u.role, u.full_name;
+  elsif v_role = 'admin' then
+    return query
+      select u.id, u.full_name, u.role, u.avatar_url
+      from public.users u
+      where u.role = 'mudur' and u.is_active
+      order by u.full_name;
+  end if;
+  -- vatandaş: boş liste (return query hiç çalışmadı, fonksiyon boş döner).
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_dm_contacts"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_dm_contacts"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_dm_contacts"() TO "service_role";
+
+
+--
+-- get_or_create_dm_conversation() — izin verilen bir kişiyle (personel↔kendi
+-- müdürü, müdür↔admin) var olan konuşmayı döndürür, yoksa oluşturur.
+--
+CREATE OR REPLACE FUNCTION "public"."get_or_create_dm_conversation"("p_other_user_id" "uuid") RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_caller uuid := auth.uid();
+  v_caller_role text;
+  v_caller_dept bigint;
+  v_other_role text;
+  v_other_dept bigint;
+  v_other_active boolean;
+  v_low uuid;
+  v_high uuid;
+  v_conversation_id uuid;
+begin
+  if v_caller is null then
+    raise exception 'Giriş yapmanız gerekiyor.';
+  end if;
+  if not public.current_user_is_active() then
+    raise exception 'Hesabınız pasifleştirilmiş, mesajlaşma özelliğini kullanamazsınız.';
+  end if;
+  if v_caller = p_other_user_id then
+    raise exception 'Kendinizle konuşma başlatamazsınız.';
+  end if;
+
+  select role, department_id into v_caller_role, v_caller_dept from public.users where id = v_caller;
+  select role, department_id, is_active into v_other_role, v_other_dept, v_other_active from public.users where id = p_other_user_id;
+
+  if v_other_role is null then
+    raise exception 'Kullanıcı bulunamadı.';
+  end if;
+  if not coalesce(v_other_active, true) then
+    raise exception 'Bu kullanıcı pasifleştirilmiş, mesajlaşma başlatılamaz.';
+  end if;
+
+  if (v_caller_role = 'personel' and v_other_role = 'mudur' and not (v_caller_dept is distinct from v_other_dept)) then
+    -- personel → kendi biriminin müdürü: izinli
+  elsif (v_caller_role = 'mudur' and v_other_role = 'personel' and not (v_caller_dept is distinct from v_other_dept)) then
+    -- müdür → kendi biriminin personeli: izinli
+  elsif (v_caller_role = 'mudur' and v_other_role = 'admin') then
+    -- müdür → admin: izinli
+  elsif (v_caller_role = 'admin' and v_other_role = 'mudur') then
+    -- admin → müdür: izinli
+  else
+    raise exception 'Bu kullanıcıyla mesajlaşma izniniz yok.';
+  end if;
+
+  if v_caller < p_other_user_id then
+    v_low := v_caller; v_high := p_other_user_id;
+  else
+    v_low := p_other_user_id; v_high := v_caller;
+  end if;
+
+  select id into v_conversation_id from public.dm_conversations
+    where participant_a = v_low and participant_b = v_high;
+
+  if v_conversation_id is null then
+    insert into public.dm_conversations (participant_a, participant_b)
+    values (v_low, v_high)
+    returning id into v_conversation_id;
+  end if;
+
+  return v_conversation_id;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_or_create_dm_conversation"("p_other_user_id" "uuid") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_or_create_dm_conversation"("p_other_user_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_or_create_dm_conversation"("p_other_user_id" "uuid") TO "service_role";
+
+
+--
+-- get_my_dm_conversations() — konuşma listesi ekranı için: karşı tarafın
+-- bilgisi (users RLS'ini bypass ederek), son mesaj önizlemesi, okunmamış
+-- sayısı. `users` tablosuna JOIN gerektirdiği için security definer.
+--
+CREATE OR REPLACE FUNCTION "public"."get_my_dm_conversations"() RETURNS TABLE(
+    "conversation_id" "uuid",
+    "other_user_id" "uuid",
+    "other_full_name" "text",
+    "other_role" "text",
+    "other_avatar_url" "text",
+    "last_message_body" "text",
+    "last_message_at" timestamp with time zone,
+    "last_message_sender_id" "uuid",
+    "unread_count" bigint
+)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then
+    raise exception 'Giriş yapmanız gerekiyor.';
+  end if;
+
+  return query
+    select
+      c.id,
+      other.id,
+      other.full_name,
+      other.role,
+      other.avatar_url,
+      lm.body,
+      lm.created_at,
+      lm.sender_id,
+      (
+        select count(*) from public.dm_messages m
+        where m.conversation_id = c.id
+          and (m.sender_id is distinct from v_uid)
+          and m.created_at > coalesce(
+            case when c.participant_a = v_uid then c.participant_a_last_read_at else c.participant_b_last_read_at end,
+            'epoch'::timestamptz
+          )
+      )
+    from public.dm_conversations c
+    join public.users other on other.id = (case when c.participant_a = v_uid then c.participant_b else c.participant_a end)
+    left join lateral (
+      select m2.body, m2.created_at, m2.sender_id
+      from public.dm_messages m2
+      where m2.conversation_id = c.id
+      order by m2.created_at desc
+      limit 1
+    ) lm on true
+    where (c.participant_a = v_uid or c.participant_b = v_uid)
+    order by coalesce(lm.created_at, c.created_at) desc;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_my_dm_conversations"() OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."get_my_dm_conversations"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_my_dm_conversations"() TO "service_role";
+
+
+--
+-- mark_dm_conversation_read() — konuşma ekranı açılınca çağrılır, çağıranın
+-- last_read_at'ini şimdiye çeker (okunmamış sayacı bunu baz alıyor).
+--
+CREATE OR REPLACE FUNCTION "public"."mark_dm_conversation_read"("p_conversation_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  update public.dm_conversations
+    set participant_a_last_read_at = case when participant_a = v_uid then now() else participant_a_last_read_at end,
+        participant_b_last_read_at = case when participant_b = v_uid then now() else participant_b_last_read_at end
+  where id = p_conversation_id and (participant_a = v_uid or participant_b = v_uid);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."mark_dm_conversation_read"("p_conversation_id" "uuid") OWNER TO "postgres";
+
+
+GRANT ALL ON FUNCTION "public"."mark_dm_conversation_read"("p_conversation_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."mark_dm_conversation_read"("p_conversation_id" "uuid") TO "service_role";
+
+
+--
+-- handle_new_dm_message() — yeni mesaj eklenince (1) konuşmanın
+-- last_message_at'ini güncelle, (2) karşı tarafa uygulama içi bildirim
+-- gönder (`notifications.conversation_id` dolu, `request_id` NULL —
+-- `notifications_screen.dart` bu durumda talep yerine DM ekranını açar).
+--
+CREATE OR REPLACE FUNCTION "public"."handle_new_dm_message"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  v_conversation record;
+  v_recipient uuid;
+  v_sender_name text;
+begin
+  select * into v_conversation from public.dm_conversations where id = new.conversation_id;
+
+  update public.dm_conversations set last_message_at = new.created_at where id = new.conversation_id;
+
+  if v_conversation.participant_a = new.sender_id then
+    v_recipient := v_conversation.participant_b;
+  else
+    v_recipient := v_conversation.participant_a;
+  end if;
+
+  select full_name into v_sender_name from public.users where id = new.sender_id;
+
+  insert into public.notifications (user_id, request_id, conversation_id, message)
+  values (
+    v_recipient,
+    null,
+    new.conversation_id,
+    coalesce(v_sender_name, 'Biri') || ' size mesaj gönderdi: ' ||
+      (case when length(new.body) > 60 then left(new.body, 60) || '…' else new.body end)
+  );
+
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."handle_new_dm_message"() OWNER TO "postgres";
+
+
+CREATE TRIGGER "on_dm_message_created" AFTER INSERT ON "public"."dm_messages" FOR EACH ROW EXECUTE FUNCTION "public"."handle_new_dm_message"();
+

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import 'dm_chat_screen.dart';
 import 'request_detail_screen.dart';
 
 const List<String> _turkishMonths = [
@@ -105,8 +106,23 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       }
     }
 
+    if (!mounted) return;
+
+    // Faz 7 (2026-07-23) — DM bildirimlerinde request_id NULL, conversation_id
+    // dolu; bu durumda talep detayı yerine ilgili DM konuşması açılır
+    // (`DmChatScreen`, karşı tarafın bilgisini kendi bulur — bkz. o ekranın
+    // dokümantasyonu).
+    final conversationId = notification['conversation_id'] as String?;
+    if (conversationId != null) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => DmChatScreen(conversationId: conversationId)),
+      );
+      return;
+    }
+
     final requestId = notification['request_id'] as String?;
-    if (requestId == null || !mounted) return;
+    if (requestId == null) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => RequestDetailScreen(requestId: requestId)),

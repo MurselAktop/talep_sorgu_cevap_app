@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// "Beni Hatırla" tercihini ve (yalnızca UI'da hızlı gösterim için) son
@@ -41,5 +42,22 @@ class LocalPrefsService {
     } else {
       await prefs.setString(_cachedFullNameKey, name);
     }
+  }
+
+  static const _themeModeKey = 'theme_mode';
+
+  /// Sadece 'light'/'dark' saklanır — CLAUDE.md'nin "tek merkezi tema"
+  /// ilkesiyle tutarlı kalmak için `ThemeMode.system` BİLİNÇLİ olarak
+  /// desteklenmiyor (kullanıcı isteği net: "açık/koyu tema", üçüncü bir
+  /// seçenek istenmedi). Varsayılan koyu — uygulamanın zaten baştan beri
+  /// tasarlandığı tema.
+  static Future<ThemeMode> getThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_themeModeKey) == 'light' ? ThemeMode.light : ThemeMode.dark;
+  }
+
+  static Future<void> setThemeMode(ThemeMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_themeModeKey, mode == ThemeMode.light ? 'light' : 'dark');
   }
 }
