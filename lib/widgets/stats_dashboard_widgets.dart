@@ -160,6 +160,7 @@ class ResolutionTrendChart extends StatelessWidget {
         FlSpot(i.toDouble(), _asDouble(trendRows[i]['avg_resolution_hours']) ?? 0),
     ];
     final firstPeriodLabel = _formatPeriod(trendRows.first['period_start'] as String);
+    final lineColor = Theme.of(context).colorScheme.primary;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -172,12 +173,12 @@ class ResolutionTrendChart extends StatelessWidget {
                 LineChartBarData(
                   spots: spots,
                   isCurved: true,
-                  color: Colors.deepPurple,
+                  color: lineColor,
                   barWidth: 3,
                   dotData: const FlDotData(show: true),
                   belowBarData: BarAreaData(
                     show: true,
-                    color: Colors.deepPurple.withValues(alpha: 0.1),
+                    color: lineColor.withValues(alpha: 0.1),
                   ),
                 ),
               ],

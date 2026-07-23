@@ -101,4 +101,30 @@ class AuthService {
   static Future<void> resetPasswordForEmail(String email) {
     return _client.auth.resetPasswordForEmail(email);
   }
+
+  /// E-posta doğrulama akışı (2026-07-22): `ENABLE_EMAIL_AUTOCONFIRM=false`
+  /// yapıldıktan sonra `signUp()`, kullanıcıyı otomatik oturum açmış hale
+  /// GETİRMEZ — hesap `email_confirmed_at is null` durumda kalır ve
+  /// `signInWithPassword` "Email not confirmed" hatasıyla reddeder. Supabase,
+  /// kayıt e-postasına şifremi-unuttum akışındaki AYNI ikili temsili
+  /// (link + 6 haneli kod) koyar; link burada da bilinçli olarak
+  /// kullanılmıyor (aynı `SITE_URL` sorunu — bkz. CLAUDE.md). Kullanıcı 6
+  /// haneli kodu `confirm_email_screen.dart`'a girer, orası
+  /// `auth.verifyOTP(type: OtpType.signup, ...)` ile doğrular.
+  static Future<void> verifySignupOtp({
+    required String email,
+    required String token,
+  }) {
+    return _client.auth.verifyOTP(
+      type: OtpType.signup,
+      email: email,
+      token: token,
+    );
+  }
+
+  /// Doğrulama kodunun süresi dolmuşsa veya e-posta kaybolduysa, yeni bir
+  /// kayıt doğrulama e-postası (yeni bir 6 haneli kodla) gönderir.
+  static Future<void> resendSignupConfirmation(String email) {
+    return _client.auth.resend(type: OtpType.signup, email: email);
+  }
 }

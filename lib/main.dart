@@ -5,23 +5,38 @@ import 'screens/login_screen.dart';
 import 'screens/welcome_back_screen.dart';
 import 'services/local_prefs_service.dart';
 import 'services/supabase_service.dart';
+import 'theme/app_theme.dart';
+import 'theme/theme_controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
   await SupabaseService.initialize();
+  await ThemeController.load();
   runApp(const MyApp());
 }
 
+/// `ThemeController.mode`'u dinleyip `MaterialApp.themeMode`'u güncelleyen
+/// kök widget. Hem `light`/`dark` `ThemeData`'sı hem hangisinin aktif
+/// olduğu TEK merkezi yerden (`app_theme.dart` + `theme_controller.dart`)
+/// geliyor — ekranlar kendi tema kararını hiç vermiyor.
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'TŞYS',
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple)),
-      home: const AuthGate(),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: ThemeController.mode,
+      builder: (context, themeMode, _) {
+        return MaterialApp(
+          title: 'TŞYS',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.lightTheme,
+          darkTheme: AppTheme.darkTheme,
+          themeMode: themeMode,
+          home: const AuthGate(),
+        );
+      },
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/star_rating.dart';
 import '../widgets/status_badge.dart';
 
 /// `requests.requester_type` ham değerlerinin Türkçe karşılıkları.
@@ -17,6 +18,77 @@ const Map<String, String> _approvalStatusLabels = {
   'onaylandi': 'Onaylandı',
   'reddedildi': 'Reddedildi',
 };
+
+/// Faz 6 (2026-07-23) — `request_history.event_type` ham değerlerinin Türkçe
+/// etiketi/ikonu/rengi. `actor_label` zaten yazma anında (trigger/RPC içinde,
+/// gizlilik kuralına uygun şekilde) hazırlandığı için burada sadece olay
+/// TÜRÜNÜ göstermek yeterli — bkz. migration'daki mimari not.
+const Map<String, String> _historyEventLabels = {
+  'created': 'Talep oluşturuldu',
+  'assigned': 'Personele atandı',
+  'department_changed': 'Birim değiştirildi',
+  'resolved': 'Çözüm raporu gönderildi',
+  'report_resubmitted': 'Rapor yeniden gönderildi',
+  'approved': 'Onaylandı',
+  'rejected': 'Reddedildi',
+  'reopened': 'Yeniden açıldı',
+  'rated': 'Değerlendirildi',
+};
+
+const Map<String, IconData> _historyEventIcons = {
+  'created': Icons.add_circle_outline,
+  'assigned': Icons.person_add_alt,
+  'department_changed': Icons.swap_horiz,
+  'resolved': Icons.description_outlined,
+  'report_resubmitted': Icons.edit_note,
+  'approved': Icons.check_circle_outline,
+  'rejected': Icons.cancel_outlined,
+  'reopened': Icons.replay_circle_filled_outlined,
+  'rated': Icons.star_outline,
+};
+
+const Map<String, Color> _historyEventColors = {
+  'created': Colors.blue,
+  'assigned': Colors.indigo,
+  'department_changed': Colors.teal,
+  'resolved': Colors.orange,
+  'report_resubmitted': Colors.deepOrange,
+  'approved': Colors.green,
+  'rejected': Colors.red,
+  'reopened': Colors.purple,
+  'rated': Colors.amber,
+};
+
+/// Her olay tipi için `detail` jsonb içinden gösterilecek ek açıklama metni.
+String? _historyDetailText(String eventType, Map<String, dynamic>? detail) {
+  if (detail == null) return null;
+  switch (eventType) {
+    case 'assigned':
+      return detail['personnel_name'] as String?;
+    case 'department_changed':
+      return '${detail['old_department_name']} → ${detail['new_department_name']}';
+    case 'resolved':
+    case 'report_resubmitted':
+      return detail['report_text'] as String?;
+    case 'reopened':
+      final previousPersonnel = detail['previous_personnel_name'] as String?;
+      return previousPersonnel == null ? null : 'Önceki personel: $previousPersonnel';
+    case 'rated':
+      final rating = detail['rating'];
+      final comment = detail['comment'] as String?;
+      final hasComment = comment != null && comment.isNotEmpty;
+      return '$rating ★${hasComment ? ' — $comment' : ''}';
+    default:
+      return null;
+  }
+}
+
+String _formatHistoryDate(String? isoDate) {
+  final date = isoDate == null ? null : DateTime.tryParse(isoDate);
+  if (date == null) return '';
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(date.day)}.${two(date.month)}.${date.year} ${two(date.hour)}:${two(date.minute)}';
+}
 
 /// Bir talebin tüm alanlarını gösteren detay ekranı. Liste ekranlarından
 /// (request_list_screen.dart, my_requests_screen.dart) gelinir; listedeki
@@ -79,6 +151,12 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
   bool _isLoadingPersonnel = false;
   bool _isLoadingDepartmentsForReassign = false;
 
+  // Faz 6 (2026-07-23) — puanlama + talep geçmişi.
+  Map<String, dynamic>? _myRating;
+  List<Map<String, dynamic>> _history = [];
+  bool _isLoadingHistory = false;
+  bool _isReopening = false;
+
   @override
   void initState() {
     super.initState();
@@ -105,6 +183,7 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
         _result = resultResponse == null ? null : Map<String, dynamic>.from(resultResponse);
       });
       await _loadAttachments();
+      _maybeLoadRoleDependentSections();
     } on PostgrestException {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -183,8 +262,154 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
           .eq('id', userId)
           .single();
       if (mounted) setState(() => _role = profile['role'] as String);
+      _maybeLoadRoleDependentSections();
     } catch (_) {
       // Sessizce yutulur, yukarıdaki dokümantasyona bakın.
+    }
+  }
+
+  /// `_loadRequest()` ve `_loadCurrentUserRole()` paralel çalıştığı için
+  /// (initState'te ikisi de ayrı ayrı tetiklenir), puanlama/geçmiş
+  /// bölümlerinin ikisine de ihtiyacı olan bilgiler (talep + rol) hangi sırayla
+  /// gelirse gelsin yüklensin diye her iki metodun sonunda da çağrılan ortak
+  /// bir kapı fonksiyonu.
+  void _maybeLoadRoleDependentSections() {
+    if (_request == null || _role == null) return;
+    _loadMyRating();
+    _loadHistory();
+  }
+
+  /// Sadece talebi açan kişi + talep onaylanmışken anlamlı olduğu için diğer
+  /// durumlarda hiç sorgu atmadan çıkar. Puanlama ikincil bir bilgi olduğundan
+  /// hata durumunda sessizce yutulur (`_loadCurrentUserRole`'daki gerekçeyle
+  /// aynı).
+  Future<void> _loadMyRating() async {
+    final request = _request;
+    if (request == null) return;
+    final isCreator = request['created_by'] == _client.auth.currentUser?.id;
+    if (!isCreator || request['status'] != 'onaylandi') return;
+
+    try {
+      final row = await _client
+          .from('request_ratings')
+          .select('rating, comment')
+          .eq('request_id', widget.requestId)
+          .maybeSingle();
+      if (mounted) {
+        setState(() => _myRating = row == null ? null : Map<String, dynamic>.from(row));
+      }
+    } catch (_) {
+      // Sessizce yutulur, yukarıdaki dokümantasyona bakın.
+    }
+  }
+
+  /// Talep geçmişi (zaman çizelgesi) sadece personel/müdür/admin ekranlarında
+  /// gösterilir (kullanıcı isteği + RLS'in `gorebilen_calisanlar_gecmisi_gorebilir`
+  /// politikasıyla tutarlı).
+  Future<void> _loadHistory() async {
+    final role = _role;
+    if (role == null || !['personel', 'mudur', 'admin'].contains(role)) return;
+
+    setState(() => _isLoadingHistory = true);
+    try {
+      final rows = await _client
+          .from('request_history')
+          .select()
+          .eq('request_id', widget.requestId)
+          .order('created_at');
+      if (mounted) setState(() => _history = List<Map<String, dynamic>>.from(rows));
+    } catch (_) {
+      // Sessizce yutulur, yukarıdaki dokümantasyona bakın.
+    } finally {
+      if (mounted) setState(() => _isLoadingHistory = false);
+    }
+  }
+
+  void _showRateDialog() {
+    final myRating = _myRating;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => _RateRequestDialog(
+        initialRating: myRating?['rating'] as int? ?? 0,
+        initialComment: myRating?['comment'] as String?,
+        onSubmit: _submitRating,
+      ),
+    );
+  }
+
+  Future<void> _submitRating(BuildContext dialogContext, int rating, String comment) async {
+    try {
+      await _client.rpc(
+        'rate_request',
+        params: {
+          'p_request_id': widget.requestId,
+          'p_rating': rating,
+          'p_comment': comment.isEmpty ? null : comment,
+        },
+      );
+
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Değerlendirmeniz için teşekkürler.')),
+      );
+      await _loadMyRating();
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.')),
+      );
+    }
+  }
+
+  void _showReopenConfirmDialog() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Talebi Yeniden Aç'),
+        content: const Text(
+          'Bu talebi yeniden açmak istediğinize emin misiniz? Talep tekrar "açık" '
+          'duruma dönecek, ataması sıfırlanacak ve müdür tarafından yeniden bir '
+          'personele atanacaktır.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Vazgeç'),
+          ),
+          FilledButton(
+            onPressed: _isReopening ? null : () => _reopenRequest(dialogContext),
+            child: const Text('Evet, Yeniden Aç'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _reopenRequest(BuildContext dialogContext) async {
+    setState(() => _isReopening = true);
+    try {
+      await _client.rpc('reopen_request', params: {'p_request_id': widget.requestId});
+
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Talep yeniden açıldı.')),
+      );
+      await _loadRequest();
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isReopening = false);
     }
   }
 
@@ -201,8 +426,21 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
           .eq('role', 'personel');
       final personnel = List<Map<String, dynamic>>.from(response);
 
+      // Puanlar ikincil bir bilgi (Ata dialogunda personel seçimine yardımcı
+      // olsun diye eklendi) — yüklenemezse dialog yine de açılır, sadece
+      // yıldızlar gösterilmez.
+      Map<String, Map<String, dynamic>> ratingsByPersonnelId = {};
+      try {
+        final ratingRows = await _client.rpc('get_personnel_ratings') as List;
+        ratingsByPersonnelId = {
+          for (final row in ratingRows) row['personnel_id'] as String: Map<String, dynamic>.from(row),
+        };
+      } catch (_) {
+        // Sessizce yutulur, yukarıda açıklandı.
+      }
+
       if (!mounted) return;
-      _showAssignDialog(personnel);
+      _showAssignDialog(personnel, ratingsByPersonnelId);
     } on PostgrestException {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -218,7 +456,10 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
     }
   }
 
-  void _showAssignDialog(List<Map<String, dynamic>> personnel) {
+  void _showAssignDialog(
+    List<Map<String, dynamic>> personnel,
+    Map<String, Map<String, dynamic>> ratingsByPersonnelId,
+  ) {
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -232,8 +473,16 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                   itemCount: personnel.length,
                   itemBuilder: (context, index) {
                     final person = personnel[index];
+                    final ratingInfo = ratingsByPersonnelId[person['id']];
+                    final avgRating = ratingInfo?['avg_rating'] as num?;
+                    final ratingCount = ratingInfo?['rating_count'] as int?;
                     return ListTile(
                       title: Text(person['full_name'] as String? ?? ''),
+                      subtitle: StarRatingDisplay(
+                        rating: avgRating?.toDouble(),
+                        ratingCount: ratingCount,
+                        size: 14,
+                      ),
                       onTap: () => _assignRequest(
                         dialogContext,
                         person['id'] as String,
@@ -655,9 +904,136 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
             _buildInfoRow('Oluşturulma:', request['created_at']?.toString() ?? ''),
             if (resolutionDuration != null)
               _buildInfoRow('Çözüm Süresi:', '$resolutionDuration içinde çözüldü'),
+            if ((request['reopened_count'] as int? ?? 0) > 0) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Chip(
+                  avatar: Icon(Icons.replay, size: 16, color: Colors.purple.shade900),
+                  label: Text(
+                    'Bu talep daha önce ${request['reopened_count']} kez yeniden açılmıştı.',
+                  ),
+                  labelStyle: TextStyle(fontSize: 12, color: Colors.purple.shade900),
+                  backgroundColor: Colors.purple.shade50,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: EdgeInsets.zero,
+                ),
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildRatingCard() {
+    final myRating = _myRating;
+    final ratingValue = myRating?['rating'] as int?;
+    final comment = myRating?['comment'] as String?;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Değerlendirme', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            if (ratingValue != null) ...[
+              StarRatingDisplay(rating: ratingValue.toDouble(), showCount: false, size: 20),
+              if (comment != null && comment.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(comment, style: const TextStyle(fontStyle: FontStyle.italic)),
+              ],
+              const SizedBox(height: 12),
+            ],
+            OutlinedButton.icon(
+              onPressed: _showRateDialog,
+              icon: const Icon(Icons.star_outline),
+              label: Text(ratingValue == null ? 'Talebi Değerlendir' : 'Değerlendirmeni Güncelle'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.history, size: 20),
+                const SizedBox(width: 8),
+                const Text('Talep Geçmişi', style: TextStyle(fontWeight: FontWeight.bold)),
+                if (_isLoadingHistory) ...[
+                  const SizedBox(width: 12),
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (!_isLoadingHistory && _history.isEmpty)
+              const Text('Henüz bir işlem kaydı yok.')
+            else
+              for (var i = 0; i < _history.length; i++) ...[
+                if (i > 0) const Divider(height: 16),
+                _buildHistoryTile(_history[i]),
+              ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryTile(Map<String, dynamic> event) {
+    final eventType = event['event_type'] as String;
+    final detailRaw = event['detail'];
+    final detail = detailRaw is Map ? Map<String, dynamic>.from(detailRaw) : null;
+    final detailText = _historyDetailText(eventType, detail);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          _historyEventIcons[eventType] ?? Icons.circle,
+          size: 20,
+          color: _historyEventColors[eventType] ?? Colors.grey,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${_historyEventLabels[eventType] ?? eventType} — ${event['actor_label']}',
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+              ),
+              if (detailText != null && detailText.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(detailText, style: const TextStyle(fontSize: 12)),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  _formatHistoryDate(event['created_at'] as String?),
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -785,6 +1161,11 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
         request['assigned_to'] == null &&
         request['status'] == 'acik';
     final showAssignedWarning = request != null && isCreator && request['assigned_to'] != null;
+    final canRate = request != null && isCreator && request['status'] == 'onaylandi';
+    final canReopen = request != null &&
+        request['status'] == 'onaylandi' &&
+        (isCreator || _role == 'admin');
+    final showHistory = request != null && ['personel', 'mudur', 'admin'].contains(_role);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Talep Detayı')),
@@ -792,7 +1173,7 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
           ? const Center(child: CircularProgressIndicator())
           : request == null
               ? const Center(child: Text('Talep bulunamadı.'))
-              : Padding(
+              : SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -805,6 +1186,14 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                       if (result != null) ...[
                         const SizedBox(height: 16),
                         _buildResultCard(result),
+                      ],
+                      if (canRate) ...[
+                        const SizedBox(height: 16),
+                        _buildRatingCard(),
+                      ],
+                      if (showHistory) ...[
+                        const SizedBox(height: 16),
+                        _buildHistoryCard(),
                       ],
                       if (canAssign) ...[
                         const SizedBox(height: 16),
@@ -869,6 +1258,14 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                           ],
                         ),
                       ],
+                      if (canReopen) ...[
+                        const SizedBox(height: 16),
+                        OutlinedButton.icon(
+                          onPressed: _isReopening ? null : _showReopenConfirmDialog,
+                          icon: const Icon(Icons.replay),
+                          label: const Text('Talebi Yeniden Aç'),
+                        ),
+                      ],
                       if (canEditOrCancelRequest) ...[
                         const SizedBox(height: 16),
                         Row(
@@ -909,6 +1306,93 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
                     ],
                   ),
                 ),
+    );
+  }
+}
+
+/// "Talebi Değerlendir" butonuyla açılan, 1-5 yıldız + opsiyonel yorum alan
+/// dialog (Faz 6, 2026-07-23). Diğer dialoglardaki (`_ResolveReportDialog`)
+/// desenle aynı: kendi state'ini (seçilen yıldız sayısı, gönderim durumu)
+/// yönetir.
+class _RateRequestDialog extends StatefulWidget {
+  final int initialRating;
+  final String? initialComment;
+  final Future<void> Function(BuildContext dialogContext, int rating, String comment) onSubmit;
+
+  const _RateRequestDialog({
+    required this.initialRating,
+    this.initialComment,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_RateRequestDialog> createState() => _RateRequestDialogState();
+}
+
+class _RateRequestDialogState extends State<_RateRequestDialog> {
+  late int _rating = widget.initialRating;
+  late final _commentController = TextEditingController(text: widget.initialComment);
+  bool _isSubmitting = false;
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_rating < 1) {
+      setState(() => _errorText = 'Lütfen 1-5 arası bir puan seçin.');
+      return;
+    }
+    setState(() {
+      _errorText = null;
+      _isSubmitting = true;
+    });
+    await widget.onSubmit(context, _rating, _commentController.text.trim());
+    if (mounted) setState(() => _isSubmitting = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Talebi Değerlendir'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          StarRatingInput(rating: _rating, onChanged: (value) => setState(() => _rating = value)),
+          if (_errorText != null) ...[
+            const SizedBox(height: 4),
+            Text(_errorText!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+          ],
+          const SizedBox(height: 12),
+          TextField(
+            controller: _commentController,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Yorumunuz (opsiyonel)',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+          child: const Text('Vazgeç'),
+        ),
+        FilledButton(
+          onPressed: _isSubmitting ? null : _submit,
+          child: _isSubmitting
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Gönder'),
+        ),
+      ],
     );
   }
 }

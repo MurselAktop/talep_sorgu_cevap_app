@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
 import '../widgets/stats_dashboard_widgets.dart';
 import '../widgets/status_badge.dart';
@@ -25,6 +27,7 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
 
   List<Map<String, dynamic>> _rows = [];
   List<Map<String, dynamic>> _trendRows = [];
+  List<Map<String, dynamic>> _personnelRatings = [];
   bool _isLoading = true;
   String? _errorText;
 
@@ -43,11 +46,13 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
       final results = await Future.wait([
         _client.rpc('get_admin_stats'),
         _client.rpc('get_admin_resolution_trend'),
+        _client.rpc('get_personnel_ratings'),
       ]);
       if (!mounted) return;
       setState(() {
         _rows = List<Map<String, dynamic>>.from(results[0] as List);
         _trendRows = List<Map<String, dynamic>>.from(results[1] as List);
+        _personnelRatings = List<Map<String, dynamic>>.from(results[2] as List);
       });
     } on PostgrestException catch (e) {
       if (!mounted) return;
@@ -78,17 +83,36 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
     }
     final totalCount = statusTotals.values.fold<int>(0, (sum, count) => sum + count);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('İstatistikler (Tüm Birimler)'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Yenile',
-            onPressed: _isLoading ? null : _loadStats,
-          ),
-        ],
-      ),
+    // Faz 6 (2026-07-23) — birim bazlı ortalama puan: her personelin
+    // ortalamasını kendi biriminin toplamına puan-sayısı ağırlıklı olarak
+    // katıyoruz (bir personelin tek puanı, 10 puanı olan başka bir personelle
+    // aynı ağırlıkta sayılmasın diye).
+    final departmentRatingWeightedSum = <String, double>{};
+    final departmentRatingCount = <String, int>{};
+    for (final row in _personnelRatings) {
+      final departmentName = row['department_name'] as String?;
+      final avgRating = (row['avg_rating'] as num?)?.toDouble();
+      final ratingCount = row['rating_count'] as int? ?? 0;
+      if (departmentName == null || avgRating == null || ratingCount == 0) continue;
+      departmentRatingWeightedSum[departmentName] =
+          (departmentRatingWeightedSum[departmentName] ?? 0) + (avgRating * ratingCount);
+      departmentRatingCount[departmentName] = (departmentRatingCount[departmentName] ?? 0) + ratingCount;
+    }
+    final departmentRatings = <String, double>{
+      for (final entry in departmentRatingCount.entries)
+        entry.key: departmentRatingWeightedSum[entry.key]! / entry.value,
+    };
+
+    return NavigationShell(
+      currentRoute: AppNavRoute.stats,
+      title: 'İstatistikler (Tüm Birimler)',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Yenile',
+          onPressed: _isLoading ? null : _loadStats,
+        ),
+      ],
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorText != null
@@ -169,9 +193,96 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
                       ),
                     ),
                   ),
+                  if (departmentRatings.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              'Birim Bazlı Ortalama Değerlendirme Puanı',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                            const SizedBox(height: 16),
+                            _DepartmentRatingBarChart(departmentRatings: departmentRatings),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
+    );
+  }
+}
+
+/// Birim bazlı ortalama puan çubuk grafiği (Faz 6, 2026-07-23) — y ekseni
+/// sabit 0-5 (yıldız skalası), her çubuğun üstünde `StarRatingDisplay` ile
+/// aynı sayısal biçim ("4.5") gösterilir.
+class _DepartmentRatingBarChart extends StatelessWidget {
+  const _DepartmentRatingBarChart({required this.departmentRatings});
+
+  final Map<String, double> departmentRatings;
+
+  @override
+  Widget build(BuildContext context) {
+    final departments = departmentRatings.keys.toList();
+
+    return SizedBox(
+      height: 240,
+      child: BarChart(
+        BarChartData(
+          maxY: 5,
+          barGroups: [
+            for (var i = 0; i < departments.length; i++)
+              BarChartGroupData(
+                x: i,
+                barRods: [
+                  BarChartRodData(
+                    toY: departmentRatings[departments[i]]!,
+                    color: Colors.amber,
+                    width: 22,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ],
+              ),
+          ],
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  final i = value.round();
+                  if (i < 0 || i >= departments.length) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      departments[i],
+                      style: const TextStyle(fontSize: 10),
+                      textAlign: TextAlign.center,
+                    ),
+                  );
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 28)),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: const FlGridData(show: true),
+          borderData: FlBorderData(show: false),
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipItem: (group, groupIndex, rod, rodIndex) =>
+                  BarTooltipItem(rod.toY.toStringAsFixed(1), const TextStyle(color: Colors.white)),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

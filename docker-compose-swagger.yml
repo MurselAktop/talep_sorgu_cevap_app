@@ -1,0 +1,24 @@
+# Supabase'in ürettiği REST API'yi (PostgREST) ve Auth API'yi (GoTrue)
+# tarayıcı üzerinden test etmek için Swagger UI. Supabase'in kendi
+# docker-compose'undan bağımsız, ayrı bir servis olarak çalışır.
+#
+# Not: Şemalar canlı URL yerine yerel dosyalardan (swagger/*.json)
+# okunuyor. Sebep: Swagger UI, şemayı ilk çekerken apikey header'ı
+# ekleyemiyor ve Supabase apikey olmadan 401 döndürüyor (tavuk-yumurta
+# sorunu). Bu yüzden REST şeması önce fetch-openapi-schema.ps1 ile
+# apikey header'ıyla indirilip yerel dosya olarak sunuluyor; Auth
+# şeması ise elle yazıldı (GoTrue apikey olmadan da şema döndürmüyor).
+#
+# İki şema arasında Swagger UI'ın sağ üstündeki açılır menüden geçiş
+# yapılabilir (URLS ayarı).
+services:
+  swagger-ui:
+    image: swaggerapi/swagger-ui
+    container_name: tsys-swagger-ui
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./swagger/openapi.json:/usr/share/nginx/html/rest-api.json:ro
+      - ./swagger/auth-openapi.json:/usr/share/nginx/html/auth-api.json:ro
+    environment:
+      - 'URLS=[{"url": "/rest-api.json", "name": "REST API (PostgREST)"}, {"url": "/auth-api.json", "name": "Auth API (GoTrue)"}]'

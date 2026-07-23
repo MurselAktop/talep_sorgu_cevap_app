@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
 import '../widgets/status_badge.dart';
 import 'request_detail_screen.dart';
@@ -192,25 +194,24 @@ class _RequestListScreenState extends State<RequestListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Gelen Talepler'),
-        actions: [
-          IconButton(
-            icon: Badge(
-              isLabelVisible: _filters.isActive,
-              child: const Icon(Icons.tune),
-            ),
-            tooltip: 'Filtrele',
-            onPressed: _openFilterSheet,
+    return NavigationShell(
+      currentRoute: AppNavRoute.incomingRequests,
+      title: 'Gelen Talepler',
+      actions: [
+        IconButton(
+          icon: Badge(
+            isLabelVisible: _filters.isActive,
+            child: const Icon(Icons.tune),
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Yenile',
-            onPressed: _loadRequests,
-          ),
-        ],
-      ),
+          tooltip: 'Filtrele',
+          onPressed: _openFilterSheet,
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Yenile',
+          onPressed: _loadRequests,
+        ),
+      ],
       body: Column(
         children: [
           Padding(

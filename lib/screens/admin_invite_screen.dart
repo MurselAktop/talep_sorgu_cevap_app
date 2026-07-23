@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/app_nav_route.dart';
+import '../widgets/navigation_shell.dart';
 
 /// Admin'in personel/müdür/admin daveti oluşturmasını sağlayan ekran.
 /// Davet kodu (`code`) veritabanında `generate_invite_code()` default'uyla
@@ -158,8 +160,9 @@ class _AdminInviteScreenState extends State<AdminInviteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Personel Daveti Oluştur')),
+    return NavigationShell(
+      currentRoute: AppNavRoute.invite,
+      title: 'Personel Daveti Oluştur',
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
