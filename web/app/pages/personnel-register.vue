@@ -63,53 +63,74 @@ async function submit() {
 </script>
 
 <template>
-  <div class="card space-y-4">
+  <div class="card space-y-6 p-8 sm:p-9">
     <div class="text-center">
-      <p class="text-2xl font-bold text-blue-400">Personel Kaydı</p>
-      <p class="text-sm text-white/50">Davet kodu ile</p>
+      <div
+        class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-b from-blue-500 to-blue-700 text-white shadow-[0_8px_20px_rgba(37,99,235,0.3)]"
+      >
+        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5M3.75 3h16.5v12.75A2.25 2.25 0 0118 18H6a2.25 2.25 0 01-2.25-2.25V3z" />
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">Personel Kaydı</h1>
+      <p class="mt-1.5 text-sm text-gray-500 dark:text-gray-400">Davet kodu ile kurum hesabı oluşturun</p>
     </div>
-    <form class="space-y-3" @submit.prevent="submit">
-      <div>
-        <label>Davet Kodu</label>
-        <input v-model="form.inviteCode" required class="w-full uppercase" />
+
+    <form class="space-y-4" @submit.prevent="submit">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div class="sm:col-span-2">
+          <label>Davet Kodu</label>
+          <input v-model="form.inviteCode" required class="uppercase tracking-wider" placeholder="Davet kodunuz" />
+        </div>
+        <div class="sm:col-span-2">
+          <label>Ad Soyad</label>
+          <input v-model="form.fullName" required placeholder="Adınız Soyadınız" />
+        </div>
+        <div class="sm:col-span-2">
+          <label>E-posta</label>
+          <input v-model="form.email" type="email" required placeholder="ornek@kurum.gov.tr" />
+        </div>
+        <div class="sm:col-span-2">
+          <label>Şifre</label>
+          <input v-model="form.password" type="password" required minlength="6" placeholder="En az 6 karakter" />
+        </div>
+        <div>
+          <label>T.C. Kimlik No</label>
+          <input v-model="form.tcNo" required maxlength="11" inputmode="numeric" placeholder="11 haneli" />
+        </div>
+        <div>
+          <label>Telefon</label>
+          <input v-model="form.phone" required placeholder="5XX XXX XX XX" />
+        </div>
+        <div>
+          <label>İl</label>
+          <select v-model="form.il" required>
+            <option value="" disabled>Seçin</option>
+            <option v-for="il in ILLER" :key="il" :value="il">{{ il }}</option>
+          </select>
+        </div>
+        <div>
+          <label>İlçe</label>
+          <input v-model="form.ilce" required placeholder="İlçe" />
+        </div>
       </div>
-      <div>
-        <label>Ad Soyad</label>
-        <input v-model="form.fullName" required class="w-full" />
-      </div>
-      <div>
-        <label>E-posta</label>
-        <input v-model="form.email" type="email" required class="w-full" />
-      </div>
-      <div>
-        <label>Şifre</label>
-        <input v-model="form.password" type="password" required minlength="6" class="w-full" />
-      </div>
-      <div>
-        <label>T.C. Kimlik No</label>
-        <input v-model="form.tcNo" required maxlength="11" class="w-full" />
-      </div>
-      <div>
-        <label>Telefon</label>
-        <input v-model="form.phone" required class="w-full" />
-      </div>
-      <div>
-        <label>İl</label>
-        <select v-model="form.il" required class="w-full">
-          <option value="" disabled>Seçin</option>
-          <option v-for="il in ILLER" :key="il" :value="il">{{ il }}</option>
-        </select>
-      </div>
-      <div>
-        <label>İlçe</label>
-        <input v-model="form.ilce" required class="w-full" />
-      </div>
-      <p v-if="error" class="text-sm text-status-reddedildi">{{ error }}</p>
-      <button class="btn-primary w-full" type="submit" :disabled="loading">
+
+      <p
+        v-if="error"
+        class="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+      >
+        {{ error }}
+      </p>
+
+      <button class="btn-primary w-full py-3" type="submit" :disabled="loading">
         {{ loading ? 'Kaydediliyor…' : 'Kayıt Ol' }}
       </button>
-      <NuxtLink to="/login" class="block text-center text-sm text-white/60 hover:text-white">
-        Girişe dön
+
+      <NuxtLink
+        to="/login"
+        class="block text-center text-sm text-gray-500 transition hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-300"
+      >
+        ← Girişe dön
       </NuxtLink>
     </form>
   </div>
