@@ -1,0 +1,24 @@
+# Render Blueprint - TSYS web panel (Nuxt SPA, static)
+# Dashboard: New -> Blueprint -> select this repo
+# Or manual Static Site with the same fields below.
+
+services:
+  - type: web
+    name: tsys-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm ci && npm run generate
+    staticPublishPath: ./web/.output/public
+    buildFilter:
+      paths:
+        - web/**
+    routes:
+      # SPA fallback for dynamic client routes
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NUXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NUXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
