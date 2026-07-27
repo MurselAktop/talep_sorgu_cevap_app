@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'local_prefs_service.dart';
 import 'supabase_service.dart';
 
 /// Kimlik doğrulama (kayıt/giriş) işlemlerini yönetir.
@@ -126,5 +127,78 @@ class AuthService {
   /// kayıt doğrulama e-postası (yeni bir 6 haneli kodla) gönderir.
   static Future<void> resendSignupConfirmation(String email) {
     return _client.auth.resend(type: OtpType.signup, email: email);
+  }
+
+  /// Giriş anındaki e-posta doğrulaması (2026-07-27): "Beni Hatırla"
+  /// İŞARETLENMEMİŞ her girişte (yani her taze şifre girişinde — kayıt
+  /// sırasındaki tek seferlik doğrulamadan AYRI, tekrarlayan bir ikinci
+  /// faktör olarak), şifre doğrulandıktan hemen sonra bu OTP gönderilir ve
+  /// kullanıcı `login_otp_screen.dart`'a yönlendirilir.
+  ///
+  /// GoTrue'nun `/otp` uç noktasını (magic link/e-posta OTP) kullanıyoruz;
+  /// `shouldCreateUser: false` ile YENİ hesap oluşturulması engelleniyor
+  /// (sadece var olan hesaplar için kod gönderilsin). GoTrue'nun varsayılan
+  /// "Magic Link" e-posta şablonu, hiçbir özelleştirme yapılmadan zaten
+  /// "Alternatively, enter the code: {{ .Token }}" satırını İÇERİYOR
+  /// (auth kaynak kodunda doğrulandı) — bu yüzden signup/recovery
+  /// akışlarında olduğu gibi burada da link YERİNE 6 haneli kod kullanılıyor,
+  /// ekstra bir e-posta şablonu ayarı GEREKMİYOR.
+  static Future<void> sendLoginOtp(String email) {
+    return _client.auth.signInWithOtp(email: email, shouldCreateUser: false);
+  }
+
+  /// `sendLoginOtp` ile gönderilen 6 haneli kodu doğrulayıp gerçek oturumu
+  /// (session) açar — `verifyOTP(type: OtpType.email, ...)`, `reset_password_screen.dart`/
+  /// `confirm_email_screen.dart`'taki AYNI `verifyOTP` deseninin e-posta/magic-link
+  /// karşılığıdır.
+  static Future<AuthResponse> verifyLoginOtp({
+    required String email,
+    required String token,
+  }) {
+    return _client.auth.verifyOTP(type: OtpType.email, email: email, token: token);
+  }
+
+  /// Tek cihaz/oturum sınırlaması (2026-07-27): sunucuda YENİ bir rastgele
+  /// aktif oturum token'ı üretip `public.users.active_session_token`'a
+  /// yazar — bu, aynı hesabın BAŞKA bir cihazda hâlâ geçerli sandığı ESKİ
+  /// token'ı otomatik geçersiz kılar (aynı satır güncellendiği için).
+  ///
+  /// SADECE gerçek bir giriş anında çağrılmalı (şifre girişi + "Beni
+  /// Hatırla" işaretliyken, giriş OTP'si doğrulandığında, kayıt e-postası
+  /// doğrulandığında, şifre sıfırlama sonrası) — var olan bir oturumu
+  /// sessizce sürdüren akışlar (`WelcomeBackScreen`) bunun yerine
+  /// `checkActiveSession` kullanmalı, aksi halde kendi kendini gereksiz
+  /// yere geçersiz kılmaz ama gereksiz sunucu çağrısı yapar.
+  static Future<String> registerActiveSession() async {
+    final result = await _client.rpc('register_active_session');
+    return result as String;
+  }
+
+  /// Yerelde önbelleğe alınmış `token`'ın hâlâ sunucudaki güncel aktif
+  /// oturum token'ıyla eşleşip eşleşmediğini kontrol eder. `false` dönerse,
+  /// hesapla başka bir cihazda/oturumda yeniden giriş yapılmış demektir —
+  /// çağıran taraf kullanıcıyı zorla çıkışa alıp "Oturum başka bir cihazda
+  /// açık" mesajını göstermelidir.
+  static Future<bool> checkActiveSession(String token) async {
+    final result = await _client.rpc(
+      'check_active_session',
+      params: {'p_token': token},
+    );
+    return result as bool;
+  }
+
+  /// `registerActiveSession()` + sonucu yerelde önbelleğe alma işlemini
+  /// TEK bir yerde birleştirir — dört ayrı gerçek giriş noktasında (şifre
+  /// girişi, giriş OTP'si, kayıt e-posta doğrulaması, şifre sıfırlama
+  /// sonrası) aynı iki satırın tekrar tekrar yazılmaması için. Hata
+  /// BİLİNÇLİ olarak sessizce yutulur — tek oturum kısıtlaması ikincil bir
+  /// güvenlik katmanı, bir ağ aksaklığı asıl girişi ASLA engellememeli.
+  static Future<void> registerAndCacheActiveSession() async {
+    try {
+      final token = await registerActiveSession();
+      await LocalPrefsService.setActiveSessionToken(token);
+    } catch (_) {
+      // Sessizce yutulur.
+    }
   }
 }

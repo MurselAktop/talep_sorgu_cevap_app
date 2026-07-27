@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../screens/login_screen.dart';
 import '../screens/notifications_screen.dart';
+import '../services/auth_service.dart';
+import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
 import 'app_nav_items.dart';
 import 'app_nav_route.dart';
@@ -83,11 +87,89 @@ class _NavigationShellState extends State<NavigationShell> {
   bool _canViewIncoming = false;
   int _unreadCount = 0;
 
+  /// Tek cihaz/oturum sınırlaması (2026-07-27): `NavigationShell` her üst
+  /// düzey ekranı sardığı için (bu State, kullanıcı gezindikçe birden fazla
+  /// örnekte aynı anda canlı kalabilir — Navigator önceki route'ları pop
+  /// edilene kadar bellekte tutar), bir "kicked out" durumunu SADECE TEK
+  /// bir örneğin işlemesini sağlamak için paylaşılan (static) bir kilit
+  /// kullanılıyor; aksi halde aynı anda birden fazla dialog/navigasyon
+  /// tetiklenebilirdi.
+  static bool _isHandlingSessionKick = false;
+  static const _sessionCheckInterval = Duration(seconds: 20);
+  Timer? _sessionCheckTimer;
+
   @override
   void initState() {
     super.initState();
     _loadProfile();
     _loadUnreadCount();
+    _sessionCheckTimer = Timer.periodic(_sessionCheckInterval, (_) => _checkSessionValidity());
+  }
+
+  @override
+  void dispose() {
+    _sessionCheckTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Yereldeki önbelleklenmiş aktif oturum token'ının sunucudaki güncel
+  /// değerle eşleşip eşleşmediğini kontrol eder. Hiç token yoksa (örn. bu
+  /// cihaz özelliğin eklenmesinden önce zaten oturum açmıştı) sessizce
+  /// kendi kendini kaydeder — bunu bir "kicked out" durumu SAYMAZ.
+  Future<void> _checkSessionValidity() async {
+    if (_isHandlingSessionKick || !mounted) return;
+    if (_client.auth.currentUser == null) return;
+    try {
+      final cachedToken = await LocalPrefsService.getActiveSessionToken();
+      if (cachedToken == null) {
+        await AuthService.registerAndCacheActiveSession();
+        return;
+      }
+      final isValid = await AuthService.checkActiveSession(cachedToken);
+      if (!isValid && mounted) {
+        await _handleSessionKickedOut();
+      }
+    } catch (_) {
+      // Ağ hatası — sessizce yutulur, bir sonraki periyodik denemede tekrar bakılır.
+    }
+  }
+
+  Future<void> _handleSessionKickedOut() async {
+    if (_isHandlingSessionKick) return;
+    _isHandlingSessionKick = true;
+    try {
+      try {
+        await _client.auth.signOut();
+      } catch (_) {
+        // Sessizce yutulur — yerel oturum zaten aşağıda temizleniyor.
+      }
+      await LocalPrefsService.setRememberMe(false);
+      await LocalPrefsService.setActiveSessionToken(null);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Oturum Sonlandırıldı'),
+          content: const Text(
+            'Oturum başka bir cihazda açık, lütfen onu kapatıp tekrar deneyin.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Tamam'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+    } finally {
+      _isHandlingSessionKick = false;
+    }
   }
 
   Future<void> _loadProfile() async {
@@ -326,6 +408,7 @@ class _NavigationShellState extends State<NavigationShell> {
     // olarak önceki ekrana döner — PopScope koruması gerekmez.
     if (!isLoggedIn) {
       return Scaffold(
+        resizeToAvoidBottomInset: true,
         appBar: AppBar(title: Text(widget.title), actions: widget.actions),
         body: widget.body,
         floatingActionButton: widget.floatingActionButton,
@@ -361,6 +444,7 @@ class _NavigationShellState extends State<NavigationShell> {
 
           if (isWide) {
             return Scaffold(
+              resizeToAvoidBottomInset: true,
               appBar: appBar,
               body: Row(
                 children: [
@@ -381,6 +465,7 @@ class _NavigationShellState extends State<NavigationShell> {
 
           return Scaffold(
             key: _scaffoldKey,
+            resizeToAvoidBottomInset: true,
             appBar: appBar,
             drawer: Drawer(child: _buildNavList(inDrawer: true)),
             body: widget.body,

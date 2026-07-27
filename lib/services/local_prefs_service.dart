@@ -60,4 +60,27 @@ class LocalPrefsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_themeModeKey, mode == ThemeMode.light ? 'light' : 'dark');
   }
+
+  static const _activeSessionTokenKey = 'active_session_token';
+
+  /// Tek cihaz/oturum sınırlaması (2026-07-27): bu cihazın en son
+  /// `register_active_session()` çağrısından aldığı token — `NavigationShell`
+  /// ve `WelcomeBackScreen`, bunu periyodik olarak sunucudaki güncel
+  /// değerle (`check_active_session()`) karşılaştırıp hesabın başka bir
+  /// cihazda yeniden giriş yapıp yapmadığını anlıyor. Bu değer de (diğerleri
+  /// gibi) bir güvenlik kararı için TEK BAŞINA kullanılmaz — sunucu her
+  /// zaman nihai otorite.
+  static Future<String?> getActiveSessionToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_activeSessionTokenKey);
+  }
+
+  static Future<void> setActiveSessionToken(String? token) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (token == null) {
+      await prefs.remove(_activeSessionTokenKey);
+    } else {
+      await prefs.setString(_activeSessionTokenKey, token);
+    }
+  }
 }

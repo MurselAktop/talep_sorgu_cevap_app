@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../utils/request_retention.dart';
 import '../widgets/app_nav_route.dart';
 import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
@@ -176,6 +177,21 @@ class _RequestListScreenState extends State<RequestListScreen> {
                 padding: EdgeInsets.zero,
               ),
             ),
+            if (RequestRetention.remainingLabel(
+                  status: status,
+                  resolvedAtIso: request['resolved_at'] as String?,
+                ) !=
+                null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  RequestRetention.remainingLabel(
+                    status: status,
+                    resolvedAtIso: request['resolved_at'] as String?,
+                  )!,
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
+                ),
+              ),
           ],
         ),
         onTap: () async {

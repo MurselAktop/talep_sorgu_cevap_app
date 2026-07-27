@@ -47,6 +47,11 @@ class _ConfirmEmailScreenState extends State<ConfirmEmailScreen> {
         token: _codeController.text.trim(),
       ).timeout(_networkTimeout);
 
+      // Tek cihaz/oturum sınırlaması (2026-07-27): kayıt e-posta doğrulaması
+      // da GERÇEK bir giriş anı sayılıyor — bkz. login_screen.dart'taki aynı
+      // isimli not.
+      await AuthService.registerAndCacheActiveSession();
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('E-postanız doğrulandı, giriş yapıldı.')),

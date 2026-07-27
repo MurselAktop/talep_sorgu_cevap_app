@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import 'screens/login_screen.dart';
@@ -13,6 +14,13 @@ void main() async {
   await dotenv.load(fileName: '.env');
   await SupabaseService.initialize();
   await ThemeController.load();
+  // İlk kareden itibaren sistem çubuklarını scaffold rengiyle hizala —
+  // aksi halde Android edge-to-edge kenarda yeşil/teal şerit bırakabiliyor.
+  SystemChrome.setSystemUIOverlayStyle(
+    AppTheme.systemOverlayStyleFor(
+      ThemeController.mode.value == ThemeMode.light ? Brightness.light : Brightness.dark,
+    ),
+  );
   runApp(const MyApp());
 }
 
@@ -28,13 +36,21 @@ class MyApp extends StatelessWidget {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: ThemeController.mode,
       builder: (context, themeMode, _) {
-        return MaterialApp(
-          title: 'TŞYS',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.lightTheme,
-          darkTheme: AppTheme.darkTheme,
-          themeMode: themeMode,
-          home: const AuthGate(),
+        final brightness = themeMode == ThemeMode.light ? Brightness.light : Brightness.dark;
+        final overlayStyle = AppTheme.systemOverlayStyleFor(brightness);
+        // Tema değişince de sistem çubuklarını güncelle.
+        SystemChrome.setSystemUIOverlayStyle(overlayStyle);
+
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: overlayStyle,
+          child: MaterialApp(
+            title: 'TŞYS',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeMode,
+            home: const AuthGate(),
+          ),
         );
       },
     );

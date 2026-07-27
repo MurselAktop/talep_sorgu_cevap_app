@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// TŞYS'nin merkezi Material 3 teması.
 ///
@@ -46,22 +47,52 @@ class AppTheme {
   static ThemeData get darkTheme => _buildTheme(Brightness.dark);
   static ThemeData get lightTheme => _buildTheme(Brightness.light);
 
+  /// Durum / navigasyon çubuğu renkleri. Edge-to-edge Android'de
+  /// `ColorScheme.fromSeed`'den gelen yeşilimsi secondary/tertiary tonlar
+  /// kenarda ince renkli şerit olarak sızabiliyor — çubukları scaffold ile
+  /// birebir eşleyip kontrast zorlamasını kapatıyoruz.
+  static SystemUiOverlayStyle systemOverlayStyleFor(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final barColor = isDark ? _darkScaffoldBackground : _lightScaffoldBackground;
+    return SystemUiOverlayStyle(
+      statusBarColor: barColor,
+      statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+      systemNavigationBarColor: barColor,
+      systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+      systemNavigationBarDividerColor: barColor,
+      systemNavigationBarContrastEnforced: false,
+      systemStatusBarContrastEnforced: false,
+    );
+  }
+
   static ThemeData _buildTheme(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
     final scaffoldBackground = isDark ? _darkScaffoldBackground : _lightScaffoldBackground;
     final cardSurface = isDark ? _darkCardSurface : _lightCardSurface;
     final onSurfaceColor = isDark ? Colors.white : Colors.black;
+    final overlayStyle = systemOverlayStyleFor(brightness);
 
     final colorScheme = ColorScheme.fromSeed(
       seedColor: _seedColor,
       brightness: brightness,
-    ).copyWith(surface: scaffoldBackground, surfaceContainerHighest: cardSurface);
+    ).copyWith(
+      surface: scaffoldBackground,
+      surfaceContainerHighest: cardSurface,
+      // Kenar/şerit sızıntısını azaltmak için surface türevlerini de
+      // scaffold/kart tonlarına sabitle.
+      surfaceContainerLowest: scaffoldBackground,
+      surfaceContainerLow: cardSurface,
+      surfaceContainer: cardSurface,
+      surfaceContainerHigh: cardSurface,
+    );
 
     return ThemeData(
       useMaterial3: true,
       brightness: brightness,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: scaffoldBackground,
+      canvasColor: scaffoldBackground,
       textTheme: _textTheme,
       appBarTheme: AppBarThemeData(
         backgroundColor: scaffoldBackground,
@@ -69,6 +100,7 @@ class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 2,
         centerTitle: false,
+        systemOverlayStyle: overlayStyle,
         titleTextStyle: TextStyle(
           color: onSurfaceColor,
           fontSize: 20,

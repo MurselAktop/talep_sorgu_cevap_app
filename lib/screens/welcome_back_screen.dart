@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/auth_service.dart';
 import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
 import 'home_screen.dart';
@@ -71,6 +72,35 @@ class _WelcomeBackScreenState extends State<WelcomeBackScreen> {
         return;
       }
 
+      // Tek cihaz/oturum sınırlaması (2026-07-27): bu ekran GERÇEK bir giriş
+      // anı DEĞİL, var olan bir oturumun sessizce sürdürülmesi — bu yüzden
+      // YENİ bir token kaydetmiyoruz (kendi kendini geçersiz kılmasın diye),
+      // sadece yerelde önbelleklenmiş token'ın hâlâ sunucudakiyle eşleşip
+      // eşleşmediğine bakıyoruz. Eşleşmiyorsa hesap başka bir cihazda/
+      // oturumda yeniden giriş yapmış demektir. Hiç token yoksa (özellik bu
+      // cihazda ilk kez devreye giriyor) sessizce kendi kendini kaydediyor.
+      final cachedToken = await LocalPrefsService.getActiveSessionToken();
+      if (cachedToken == null) {
+        await AuthService.registerAndCacheActiveSession();
+      } else {
+        final isValid = await AuthService.checkActiveSession(cachedToken).timeout(_networkTimeout);
+        if (!isValid) {
+          await SupabaseService.client.auth.signOut();
+          await LocalPrefsService.setRememberMe(false);
+          await LocalPrefsService.setActiveSessionToken(null);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Oturum başka bir cihazda açık, lütfen tekrar giriş yapın.'),
+            ),
+          );
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const LoginScreen()),
+          );
+          return;
+        }
+      }
+
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomePage()),
@@ -119,6 +149,11 @@ class _WelcomeBackScreenState extends State<WelcomeBackScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Text('Giriş Yap'),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: _isLoading ? null : _fallbackToLoginForm,
+                  child: const Text('Farklı bir hesapla giriş yap'),
                 ),
               ],
             ),

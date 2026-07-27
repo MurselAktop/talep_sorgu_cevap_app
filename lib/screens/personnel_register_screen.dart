@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../constants/auth_flags.dart';
 import '../constants/turkiye_iller.dart';
 import '../services/auth_service.dart';
 import '../services/supabase_service.dart';
 import '../utils/phone_input_formatter.dart';
 import '../utils/validators.dart';
 import 'confirm_email_screen.dart';
+import 'login_screen.dart';
 
 /// Personel/müdür/admin kaydı ekranı. Vatandaş kaydından (register_screen.dart)
 /// tamamen ayrı, bağımsız bir ekrandır — kendi kendine kayıt yerine, admin'in
@@ -90,20 +92,27 @@ class _PersonnelRegisterScreenState extends State<PersonnelRegisterScreen> {
         inviteCode: inviteCode,
       ).timeout(_networkTimeout);
 
-      // E-posta doğrulaması aktif olduğu için (2026-07-22) signUp() artık
-      // kullanıcıyı otomatik oturum açmış hale GETİRMİYOR. Savunmacı bir
-      // signOut() ile olası bir oturum kalıntısı temizlenip kullanıcı
-      // doğrulama koduna yönlendiriliyor (bkz. register_screen.dart'taki
-      // aynı gerekçe).
       await SupabaseService.client.auth.signOut().timeout(_networkTimeout);
 
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ConfirmEmailScreen(
-            email: _emailController.text.trim(),
+      if (emailVerificationEnabled) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ConfirmEmailScreen(
+              email: _emailController.text.trim(),
+            ),
           ),
+        );
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Kayıt tamamlandı. Şimdi giriş yapabilirsiniz.'),
         ),
+      );
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
       );
     } on PostgrestException catch (e) {
       // check_registration_availability'nin fırlattığı hata — mesaj

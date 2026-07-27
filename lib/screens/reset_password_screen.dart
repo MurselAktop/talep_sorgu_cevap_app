@@ -64,6 +64,11 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         _newPasswordController.text,
       ).timeout(_networkTimeout);
 
+      // Tek cihaz/oturum sınırlaması (2026-07-27): şifre sıfırlama sonrası
+      // da GERÇEK bir giriş anı sayılıyor — bkz. login_screen.dart'taki aynı
+      // isimli not.
+      await AuthService.registerAndCacheActiveSession();
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Şifreniz değiştirildi, giriş yapıldı.')),

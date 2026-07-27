@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../constants/auth_flags.dart';
 import '../constants/turkiye_iller.dart';
 import '../services/auth_service.dart';
 import '../services/supabase_service.dart';
@@ -79,20 +80,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ilce: _ilceController.text.trim(),
       ).timeout(_networkTimeout);
 
-      // E-posta doğrulaması aktif olduğu için (2026-07-22) signUp() artık
-      // kullanıcıyı otomatik oturum açmış hale GETİRMİYOR — hesap
-      // doğrulama e-postasındaki kod girilene kadar giriş yapamaz. Yine de
-      // olası bir oturum kalıntısını (örn. eski davranışa dönülürse) temiz
-      // tutmak için savunmacı bir signOut() yapılıyor.
+      // Olası oturum kalıntısını temizle; kullanıcı giriş ekranına döner.
       await SupabaseService.client.auth.signOut().timeout(_networkTimeout);
 
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ConfirmEmailScreen(
-            email: _emailController.text.trim(),
+      if (emailVerificationEnabled) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ConfirmEmailScreen(
+              email: _emailController.text.trim(),
+            ),
           ),
+        );
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Kayıt tamamlandı. Şimdi giriş yapabilirsiniz.'),
         ),
+      );
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
       );
     } on PostgrestException catch (e) {
       // check_registration_availability'nin fırlattığı hata — bu ekranda

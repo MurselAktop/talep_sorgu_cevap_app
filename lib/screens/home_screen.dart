@@ -1,16 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
+import '../widgets/ai_assistant_chat.dart';
 import '../widgets/app_nav_route.dart';
 import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
 import '../widgets/role_icon.dart';
 import '../widgets/stats_dashboard_widgets.dart';
 import '../widgets/status_badge.dart';
+import '../widgets/theme_toggle_button.dart';
 import '../widgets/user_avatar.dart';
 import 'admin_stats_screen.dart';
+import 'login_screen.dart';
 import 'manager_stats_screen.dart';
+import 'messages_screen.dart';
 import 'my_requests_screen.dart';
 import 'profile_screen.dart';
 import 'request_create_screen.dart';
@@ -71,6 +76,15 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Onaylanmış talepleri 3 ay sonra silen bakım RPC'si (2026-07-27).
+  Future<void> _purgeExpiredRequests() async {
+    try {
+      await _client.rpc('purge_expired_requests');
+    } catch (_) {
+      // Sessizce yutulur.
+    }
+  }
+
   Map<String, int> _countByStatus(List<dynamic> rows) {
     final counts = <String, int>{};
     for (final row in rows) {
@@ -126,6 +140,9 @@ class _HomePageState extends State<HomePage> {
         _checkSlaBreaches();
         _loadMiniStats(role);
       }
+      // Onaylanmış talep arşiv temizliği — her girişte bir kez (SLA gibi
+      // fire-and-forget). RLS/yetki SECURITY DEFINER RPC içinde.
+      _purgeExpiredRequests();
     } catch (_) {
       // Rol okunamazsa özet kartları gösterilmez; sayfa çalışmaya devam eder.
     } finally {
@@ -409,6 +426,117 @@ class _HomePageState extends State<HomePage> {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
   }
 
+  /// Arıza Asistanı'nı sohbet tarzı bir `BottomSheet`te açar (2026-07-27
+  /// isteği) — hem mesaj FAB'ının köşesindeki rozetten hem (vatandaş için)
+  /// tek başına duran mini FAB'dan çağrılır. Asistan bir birimle eşleşen
+  /// öneri verip kullanıcı "talep oluştur" derse, sohbet kapanır ve doğrudan
+  /// önerilen açıklama + birim önceden dolu şekilde talep formuna gidilir.
+  void _openAiAssistant() {
+    showAiAssistantChatSheet(
+      context,
+      onDepartmentAction: (departmentId, lastUserText) => _goTo(
+        RequestCreateScreen(initialDescription: lastUserText, initialDepartmentId: departmentId),
+      ),
+    );
+  }
+
+  /// Mesaj kutusu FAB'ına erişimi olan roller (personel/müdür/admin) için
+  /// Arıza Asistanı, mesaj ikonunun SAĞ ÜST köşesinde küçük yuvarlak bir
+  /// rozet olarak duruyor; erişimi olmayanlar (vatandaş) için asistan tek
+  /// başına küçük bir FAB'a dönüşüyor — asistan HERKESE açık olmalı.
+  Widget _buildFab() {
+    if (!_canViewIncoming) {
+      return FloatingActionButton(
+        heroTag: 'aiAssistantFab',
+        mini: true,
+        backgroundColor: Colors.deepOrange,
+        onPressed: _openAiAssistant,
+        tooltip: 'Arıza Asistanı',
+        child: const Icon(Icons.smart_toy_outlined),
+      );
+    }
+
+    return SizedBox(
+      width: 72,
+      height: 72,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.bottomRight,
+        children: [
+          FloatingActionButton(
+            heroTag: 'messagesFab',
+            onPressed: () => _goTo(const MessagesScreen()),
+            tooltip: 'Mesajlar',
+            child: const Icon(Icons.chat_bubble_rounded),
+          ),
+          Positioned(
+            top: -6,
+            right: -6,
+            child: Material(
+              color: Colors.deepOrange,
+              shape: const CircleBorder(),
+              elevation: 3,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: _openAiAssistant,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Theme.of(context).scaffoldBackgroundColor, width: 2),
+                  ),
+                  child: const Icon(Icons.smart_toy_outlined, size: 16, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Ana ekranın AppBar'ına sağ üstteki hızlı erişim çıkış butonu
+  /// (2026-07-27 isteği) — sidebar/drawer'daki "Çıkış Yap" öğesiyle AYNI
+  /// işlemi yapar (bkz. `navigation_shell.dart`'taki `_signOut`), sadece bu
+  /// buton çok kolay yanlışlıkla dokunulabilecek bir yerde (AppBar) olduğu
+  /// için onay dialogu EKLENDİ — drawer'daki öğe zaten iki adımlı bir
+  /// etkileşim (önce menüyü aç, sonra öğeye dokun) olduğu için orada onay
+  /// istenmiyordu.
+  Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Çıkış Yap'),
+        content: const Text('Hesabınızdan çıkış yapmak istediğinize emin misiniz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Hayır'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Evet, Çıkış Yap'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _client.auth.signOut();
+    } catch (_) {
+      // Sessizce yutulur — yerel oturum zaten aşağıda temizlenip giriş
+      // ekranına dönülüyor, ağ hatası çıkışı engellemesin.
+    }
+    await LocalPrefsService.setRememberMe(false);
+    await LocalPrefsService.setActiveSessionToken(null);
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final onSurface = Theme.of(context).colorScheme.onSurface;
@@ -417,6 +545,21 @@ class _HomePageState extends State<HomePage> {
     return NavigationShell(
       currentRoute: AppNavRoute.home,
       title: 'Ana Sayfa',
+      actions: [
+        const ThemeToggleButton(),
+        IconButton(
+          icon: const Icon(Icons.logout),
+          tooltip: 'Çıkış Yap',
+          onPressed: _signOut,
+        ),
+      ],
+      // Operatör uygulamalarındaki "yardım/asistan" baloncuğuyla aynı
+      // yerleşim ve görsel dil (2026-07-26 isteği). Arıza Asistanı, 2026-07-27
+      // isteğiyle mesaj kutusu FAB'ının SAĞ ÜST köşesinde küçük yuvarlak bir
+      // rozet olarak duruyor (`_buildFab`). Mesaj kutusu FAB'ına erişimi
+      // olmayan roller (vatandaş) için rozet, tek başına küçük bir FAB'a
+      // dönüşüyor — asistan HERKESE (vatandaş dahil) açık olmalı.
+      floatingActionButton: _isLoadingRole ? null : _buildFab(),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(

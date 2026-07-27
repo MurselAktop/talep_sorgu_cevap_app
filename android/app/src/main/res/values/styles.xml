@@ -11,8 +11,12 @@
          Flutter UI initializes, as well as behind your Flutter UI while its
          running.
 
-         This Theme is only used starting with V2 of Flutter's Android embedding. -->
+         windowBackground, #F4F5F7 = AppTheme._lightScaffoldBackground. -->
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">#FFF4F5F7</item>
+        <item name="android:statusBarColor">#FFF4F5F7</item>
+        <item name="android:navigationBarColor">#FFF4F5F7</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
     </style>
 </resources>

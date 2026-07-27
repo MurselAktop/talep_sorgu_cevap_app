@@ -9,6 +9,7 @@
 enum AppNavRoute {
   home,
   createRequest,
+  aiAssistant,
   myRequests,
   incomingRequests,
   messages,

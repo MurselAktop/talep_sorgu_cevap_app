@@ -1,4 +1,3 @@
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -146,17 +145,7 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Text(
-                            'Birim × Durum Dağılımı',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                          const SizedBox(height: 16),
-                          _DepartmentStatusBarChart(byDepartment: byDepartment),
-                        ],
-                      ),
+                      child: PagedDepartmentStatusChart(byDepartment: byDepartment),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -198,194 +187,13 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            const Text(
-                              'Birim Bazlı Ortalama Değerlendirme Puanı',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                            ),
-                            const SizedBox(height: 16),
-                            _DepartmentRatingBarChart(departmentRatings: departmentRatings),
-                          ],
-                        ),
+                        child: PagedDepartmentRatingChart(departmentRatings: departmentRatings),
                       ),
                     ),
                   ],
                 ],
               ),
             ),
-    );
-  }
-}
-
-/// Birim bazlı ortalama puan çubuk grafiği (Faz 6, 2026-07-23) — y ekseni
-/// sabit 0-5 (yıldız skalası), her çubuğun üstünde `StarRatingDisplay` ile
-/// aynı sayısal biçim ("4.5") gösterilir.
-class _DepartmentRatingBarChart extends StatelessWidget {
-  const _DepartmentRatingBarChart({required this.departmentRatings});
-
-  final Map<String, double> departmentRatings;
-
-  @override
-  Widget build(BuildContext context) {
-    final departments = departmentRatings.keys.toList();
-
-    return SizedBox(
-      height: 240,
-      child: BarChart(
-        BarChartData(
-          maxY: 5,
-          barGroups: [
-            for (var i = 0; i < departments.length; i++)
-              BarChartGroupData(
-                x: i,
-                barRods: [
-                  BarChartRodData(
-                    toY: departmentRatings[departments[i]]!,
-                    color: Colors.amber,
-                    width: 22,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ],
-              ),
-          ],
-          titlesData: FlTitlesData(
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 40,
-                getTitlesWidget: (value, meta) {
-                  final i = value.round();
-                  if (i < 0 || i >= departments.length) return const SizedBox.shrink();
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      departments[i],
-                      style: const TextStyle(fontSize: 10),
-                      textAlign: TextAlign.center,
-                    ),
-                  );
-                },
-              ),
-            ),
-            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 28)),
-            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          ),
-          gridData: const FlGridData(show: true),
-          borderData: FlBorderData(show: false),
-          barTouchData: BarTouchData(
-            touchTooltipData: BarTouchTooltipData(
-              getTooltipItem: (group, groupIndex, rod, rodIndex) =>
-                  BarTooltipItem(rod.toY.toStringAsFixed(1), const TextStyle(color: Colors.white)),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Sadece bu ekranda kullanılan birim×durum gruplu çubuk grafiği — müdür
-/// ekranında tek birim olduğu için birim ekseni gereksiz (bkz.
-/// manager_stats_screen.dart), bu yüzden stats_dashboard_widgets.dart'a
-/// (paylaşılan dosyaya) taşınmadı.
-class _DepartmentStatusBarChart extends StatelessWidget {
-  const _DepartmentStatusBarChart({required this.byDepartment});
-
-  final Map<String, List<Map<String, dynamic>>> byDepartment;
-
-  static const _statuses = ['acik', 'cozuldu', 'onaylandi', 'reddedildi', 'iptal'];
-
-  int _countFor(List<Map<String, dynamic>> rows, String status) {
-    for (final row in rows) {
-      if (row['status'] == status) return row['request_count'] as int;
-    }
-    return 0;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final departments = byDepartment.keys.toList();
-    var maxCount = 0;
-    for (final rows in byDepartment.values) {
-      for (final row in rows) {
-        final count = row['request_count'] as int;
-        if (count > maxCount) maxCount = count;
-      }
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(
-          height: 260,
-          child: BarChart(
-            BarChartData(
-              maxY: (maxCount + 1).toDouble(),
-              barGroups: [
-                for (var i = 0; i < departments.length; i++)
-                  BarChartGroupData(
-                    x: i,
-                    barRods: [
-                      for (final status in _statuses)
-                        BarChartRodData(
-                          toY: _countFor(byDepartment[departments[i]]!, status).toDouble(),
-                          color: statusColors[status],
-                          width: 6,
-                        ),
-                    ],
-                  ),
-              ],
-              titlesData: FlTitlesData(
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 40,
-                    getTitlesWidget: (value, meta) {
-                      final i = value.round();
-                      if (i < 0 || i >= departments.length) return const SizedBox.shrink();
-                      return Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          departments[i],
-                          style: const TextStyle(fontSize: 10),
-                          textAlign: TextAlign.center,
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                leftTitles: AxisTitles(
-                  sideTitles: SideTitles(showTitles: true, reservedSize: 32),
-                ),
-                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              ),
-              gridData: const FlGridData(show: true),
-              borderData: FlBorderData(show: false),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 4,
-          alignment: WrapAlignment.center,
-          children: [
-            for (final status in _statuses)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(width: 10, height: 10, color: statusColors[status]),
-                  const SizedBox(width: 4),
-                  Text(statusLabels[status] ?? status, style: const TextStyle(fontSize: 12)),
-                ],
-              ),
-          ],
-        ),
-      ],
     );
   }
 }

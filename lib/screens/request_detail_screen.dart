@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../utils/request_retention.dart';
 import '../widgets/star_rating.dart';
 import '../widgets/status_badge.dart';
 
@@ -904,6 +905,25 @@ class _RequestDetailScreenState extends State<RequestDetailScreen> {
             _buildInfoRow('Oluşturulma:', request['created_at']?.toString() ?? ''),
             if (resolutionDuration != null)
               _buildInfoRow('Çözüm Süresi:', '$resolutionDuration içinde çözüldü'),
+            if (RequestRetention.remainingLabel(
+                  status: status,
+                  resolvedAtIso: request['resolved_at'] as String?,
+                ) !=
+                null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  RequestRetention.remainingLabel(
+                    status: status,
+                    resolvedAtIso: request['resolved_at'] as String?,
+                  )!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade500,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
             if ((request['reopened_count'] as int? ?? 0) > 0) ...[
               const SizedBox(height: 8),
               Align(

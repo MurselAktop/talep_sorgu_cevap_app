@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/supabase_service.dart';
+import '../widgets/ai_assistant_chat.dart';
 import '../widgets/app_nav_route.dart';
 import '../widgets/navigation_shell.dart';
 import 'my_requests_screen.dart';
@@ -20,6 +21,7 @@ class _PickedMedia {
   const _PickedMedia({
     required this.kind,
     required this.fileName,
+    required this.byteLength,
     this.previewBytes,
     this.xFile,
     this.platformFile,
@@ -27,6 +29,7 @@ class _PickedMedia {
 
   final _MediaKind kind;
   final String fileName;
+  final int byteLength;
   final Uint8List? previewBytes;
   final XFile? xFile;
   final PlatformFile? platformFile;
@@ -40,7 +43,13 @@ class _PickedMedia {
 /// `access_token` alanlarına dokunulmaz; hepsinin veritabanında otomatik
 /// varsayılanı vardır.
 class RequestCreateScreen extends StatefulWidget {
-  const RequestCreateScreen({super.key});
+  const RequestCreateScreen({super.key, this.initialDescription, this.initialDepartmentId});
+
+  /// Arıza Asistanı ekranından (2026-07-27) "Bu Birimle Talep Oluştur"
+  /// aksiyonuyla gelindiğinde formu önceden doldurmak için kullanılır.
+  /// Normal (asistan kullanılmadan) akışta ikisi de `null` kalır.
+  final String? initialDescription;
+  final int? initialDepartmentId;
 
   @override
   State<RequestCreateScreen> createState() => _RequestCreateScreenState();
@@ -65,6 +74,10 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialDescription != null) {
+      _descriptionController.text = widget.initialDescription!;
+    }
+    _selectedDepartmentId = widget.initialDepartmentId;
     _loadDepartments();
   }
 
@@ -260,11 +273,20 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
         : await _picker.pickVideo(source: source);
     if (file == null) return;
 
-    final previewBytes = kind == _MediaKind.image ? await file.readAsBytes() : null;
+    final bytes = await file.readAsBytes();
+    if (!_acceptAttachmentSize(bytes.length, file.name)) return;
+
+    final previewBytes = kind == _MediaKind.image ? bytes : null;
     if (!mounted) return;
     setState(() {
       _pickedMedia.add(
-        _PickedMedia(kind: kind, fileName: file.name, previewBytes: previewBytes, xFile: file),
+        _PickedMedia(
+          kind: kind,
+          fileName: file.name,
+          byteLength: bytes.length,
+          previewBytes: previewBytes,
+          xFile: file,
+        ),
       );
     });
   }
@@ -278,16 +300,70 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
     final picked = result?.files.first;
     if (picked == null) return;
 
+    final size = picked.size;
+    if (!_acceptAttachmentSize(size, picked.name)) return;
+
     if (!mounted) return;
     setState(() {
       _pickedMedia.add(
-        _PickedMedia(kind: _MediaKind.document, fileName: picked.name, platformFile: picked),
+        _PickedMedia(
+          kind: _MediaKind.document,
+          fileName: picked.name,
+          byteLength: size,
+          platformFile: picked,
+        ),
       );
     });
   }
 
+  /// Talep ekleri için TOPLAM 10 MB üst sınırı (2026-07-27).
+  static const _maxTotalAttachmentBytes = 10 * 1024 * 1024;
+
+  bool _acceptAttachmentSize(int byteLength, String fileName) {
+    final currentTotal = _pickedMedia.fold<int>(0, (sum, m) => sum + m.byteLength);
+    final nextTotal = currentTotal + byteLength;
+    if (nextTotal <= _maxTotalAttachmentBytes) return true;
+    final usedMb = (currentTotal / (1024 * 1024)).toStringAsFixed(1);
+    final fileMb = (byteLength / (1024 * 1024)).toStringAsFixed(1);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '"$fileName" ($fileMb MB) eklenemedi. Eklerin toplamı en fazla 10 MB olabilir '
+          '(şu an $usedMb MB kullanıldı).',
+        ),
+      ),
+    );
+    return false;
+  }
+
   void _removeMedia(int index) {
     setState(() => _pickedMedia.removeAt(index));
+  }
+
+  /// "Talep oluşturma ekranına asistanın ön çözüm bileşenini entegre et"
+  /// (2026-07-27 isteği) — kullanıcı formu terk etmeden, o an Açıklama
+  /// alanına yazdığı metni (varsa) ilk mesaj olarak alan sohbet tarzı bir
+  /// `BottomSheet` açar (bkz. `ai_assistant_chat.dart`). Asistan bir birim
+  /// önerip eşleştiğinde "Bu Birimi Seç" aksiyonu doğrudan dropdown'ı ve
+  /// (boşsa) Açıklama alanını doldurur.
+  void _showAiAssistant() {
+    final description = _descriptionController.text.trim();
+    showAiAssistantChatSheet(
+      context,
+      initialUserMessage: description.isEmpty ? null : description,
+      departmentActionLabel: 'Bu Birimi Seç',
+      onDepartmentAction: (departmentId, lastUserText) {
+        setState(() {
+          _selectedDepartmentId = departmentId;
+          if (_descriptionController.text.trim().isEmpty) {
+            _descriptionController.text = lastUserText;
+          }
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Birim otomatik seçildi.')),
+        );
+      },
+    );
   }
 
   Future<void> _showMediaMenu() async {
@@ -412,6 +488,14 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
                     decoration: const InputDecoration(labelText: 'Açıklama'),
                     validator: (value) =>
                         (value == null || value.trim().isEmpty) ? 'Açıklama girin' : null,
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _showAiAssistant,
+                      icon: const Icon(Icons.auto_awesome, size: 18),
+                      label: const Text('AI ile Ön Analiz Yap'),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   TextFormField(

@@ -124,11 +124,16 @@ class _DmChatScreenState extends State<DmChatScreen> {
 
   Future<void> _loadMessages({bool scrollToBottom = false}) async {
     try {
+      // 2026-07-27 düzeltmesi: postgrest-dart'ta `order()`'ın varsayılanı
+      // `ascending: false` (azalan) — bu YANLIŞLIKLA en yeni mesajı listenin
+      // BAŞINA (dolayısıyla normal, ters çevrilmemiş bir ListView'de EKRANIN
+      // ÜSTÜNE) koyuyordu. WhatsApp'takiyle aynı sırayı (eski üstte, yeni
+      // altta) elde etmek için `ascending: true` AÇIKÇA belirtilmeli.
       final rows = await _client
           .from('dm_messages')
           .select('id, sender_id, body, tagged_request_id, created_at')
           .eq('conversation_id', widget.conversationId)
-          .order('created_at');
+          .order('created_at', ascending: true);
       final messages = List<Map<String, dynamic>>.from(rows);
 
       final ids = messages.map((m) => m['id'] as String).toList();

@@ -5,6 +5,7 @@ import '../screens/admin_email_change_requests_screen.dart';
 import '../screens/admin_invite_screen.dart';
 import '../screens/admin_stats_screen.dart';
 import '../screens/admin_users_screen.dart';
+import '../screens/ai_assistant_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/manager_stats_screen.dart';
 import '../screens/messages_screen.dart';
@@ -82,6 +83,13 @@ List<AppNavItem> buildNavItems({
       icon: Icons.add_circle_outline,
       color: Colors.green,
       builder: (_) => const RequestCreateScreen(),
+    ),
+    AppNavItem(
+      id: AppNavRoute.aiAssistant,
+      label: 'Arıza Asistanı',
+      icon: Icons.smart_toy_outlined,
+      color: Colors.deepOrange,
+      builder: (_) => const AiAssistantScreen(),
     ),
     AppNavItem(
       id: AppNavRoute.myRequests,

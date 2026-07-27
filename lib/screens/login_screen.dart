@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../constants/auth_flags.dart';
 import '../services/auth_service.dart';
 import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
@@ -8,6 +9,7 @@ import 'citizen_guest_menu_screen.dart';
 import 'confirm_email_screen.dart';
 import 'forgot_password_screen.dart';
 import 'home_screen.dart';
+import 'login_otp_screen.dart';
 import 'personnel_register_screen.dart';
 import 'register_screen.dart';
 
@@ -21,6 +23,10 @@ enum _LoginType { vatandas, personel }
 /// gösterilir. Giriş başarılı olduktan hemen sonra, seçilen bağlamla
 /// public.users'daki gerçek role uyuşuyor mu diye kontrol edilir —
 /// uyuşmuyorsa oturum kapatılıp kullanıcı seçim ekranına geri döndürülür.
+///
+/// E-posta OTP ikinci faktörü: [emailVerificationEnabled] açıksa ve
+/// "Beni Hatırla" kapalıysa `LoginOtpScreen`'e gider. Şimdilik bayrak
+/// kapalı (fake test mailleri).
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -116,13 +122,25 @@ class _LoginScreenState extends State<LoginScreen> {
       // kaydedilseydi, sonradan reddedilen bir girişte bile yanlışlıkla
       // kalıcı olurdu.
       await LocalPrefsService.setRememberMe(_rememberMe);
-      if (_rememberMe) {
-        await LocalPrefsService.setCachedFullName(profile['full_name'] as String?);
+      await LocalPrefsService.setCachedFullName(profile['full_name'] as String?);
+
+      // E-posta doğrulaması geçici kapalıysa veya "Beni Hatırla" açıksa:
+      // doğrudan ana ekrana. Aksi halde giriş OTP ekranı.
+      if (!emailVerificationEnabled || _rememberMe) {
+        await AuthService.registerAndCacheActiveSession();
+        if (!mounted) return;
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const HomePage()),
+        );
+        return;
       }
 
+      final email = _emailController.text.trim();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomePage()),
+        MaterialPageRoute(
+          builder: (_) => LoginOtpScreen(email: email, sendOtpOnOpen: true),
+        ),
       );
     } on AuthException catch (e) {
       if (!mounted) return;
@@ -131,13 +149,24 @@ class _LoginScreenState extends State<LoginScreen> {
       // doğrulama kodu ekranına yönlendirmek, sadece hata mesajı göstermekten
       // daha iyi bir akış.
       if (e.message.toLowerCase().contains('email not confirmed')) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ConfirmEmailScreen(
-              email: _emailController.text.trim(),
+        if (emailVerificationEnabled) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ConfirmEmailScreen(
+                email: _emailController.text.trim(),
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Bu hesabın e-postası henüz onaylı değil. '
+                'Test için hesabı Dashboard’dan onaylayın.',
+              ),
+            ),
+          );
+        }
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
@@ -162,6 +191,9 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     if (message.contains('email not confirmed')) {
       return 'E-posta adresiniz henüz onaylanmadı.';
+    }
+    if (message.contains('rate limit') || message.contains('over_email_send_rate_limit')) {
+      return 'Çok sık e-posta gönderildi. Lütfen birkaç dakika bekleyip tekrar deneyin.';
     }
     return 'Giriş yapılamadı. Lütfen bilgilerinizi kontrol edin.';
   }
@@ -195,6 +227,29 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Icon(
+              Icons.shield_outlined,
+              size: 56,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'TŞYS',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Talep ve Şikâyet Yönetim Sistemi',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+            const SizedBox(height: 40),
             FilledButton(
               style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
               onPressed: () => _selectType(_LoginType.vatandas),
@@ -237,6 +292,14 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Text(
+                'TŞYS',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+              ),
+              const SizedBox(height: 12),
               Text(
                 isVatandas ? 'Vatandaş Girişi' : 'Personel Girişi',
                 style: Theme.of(context).textTheme.headlineSmall,
