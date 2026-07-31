@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/ai_assistant_service.dart';
 import '../services/supabase_service.dart';
+import '../theme/app_theme.dart';
 import 'ai_analysis_result_view.dart';
 
 class _ChatEntry {
@@ -505,7 +506,7 @@ Future<void> showAiAssistantChatSheet(
                 padding: const EdgeInsets.fromLTRB(16, 14, 8, 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.smart_toy_outlined, color: Colors.deepOrange),
+                    const Icon(Icons.smart_toy_outlined, color: AppTheme.aiAccent),
                     const SizedBox(width: 8),
                     const Expanded(
                       child: Text(

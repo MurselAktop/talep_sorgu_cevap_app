@@ -3,45 +3,32 @@ import 'package:flutter/services.dart';
 
 /// TŞYS'nin merkezi Material 3 teması.
 ///
-/// Bu bir belediye/kurum şikâyet-talep sistemi olduğu için ciddi ve güven
-/// verici bir görsel kimlik hedeflenir. Ana tasarım koyu tema (dark theme) —
-/// tasarım taslağına göre neredeyse siyah bir taban (#121212) üzerinde biraz
-/// daha açık gri kart yüzeyleri (#1E1E1E). Marka/aksiyon rengi (birincil
-/// renk), önceki (açık) sürümle aynı kurumsal lacivert tohumdan
-/// (`_seedColor`) türetiliyor — Material 3'ün algoritması hem koyu hem açık
-/// arka planda okunaklı kalacak bir ton otomatik üretiyor; elle renk
-/// seçilmedi. Turuncu, sidebar'daki aktif öğe/CTA rengi olarak
-/// KULLANILMIYOR — turuncu zaten `status_badge.dart`'ta "Açık" durumunun
-/// anlamı, aynı rengi marka vurgusu için de kullanmak durum rozetleriyle
-/// karışıklığa yol açardı.
+/// Renk kimliği web yönetim paneliyle (`web/` Tailwind blue/slate paleti)
+/// hizalıdır: birincil marka mavisi `blue-600` (#2563EB), koyu yüzeyler
+/// gray-900/800, açık yüzeyler slate-50. Turuncu marka CTA olarak
+/// KULLANILMIYOR — durum rozetlerinde "Açık" ve AI asistan vurgusunda
+/// (`aiAccent`) ayrı roller üstleniyor.
 ///
-/// **2026-07-22 güncellemesi:** Kullanıcı isteğiyle Ayarlar ekranından
-/// değiştirilebilen bir açık tema (`lightTheme`) eklendi — `ThemeController`
-/// (main.dart) hangisinin aktif olduğuna karar verir, buradaki iki fonksiyon
-/// SADECE `brightness` parametresiyle ayrışan tek bir `_buildTheme`'i
-/// paylaşır (kod tekrarı yok).
+/// **2026-07-22:** Ayarlar'dan açık/koyu tema (`ThemeController`).
+/// **2026-07-31:** Web paneli renk temasına hizalama.
 ///
-/// Ekranlar kendi AppBar/Card/buton/form stilini YAZMAZ — hepsi buradaki
-/// bileşen temalarına güvenir; bu sayede tutarlılık tek kaynaktan sağlanır.
-///
-/// Bilinçli olarak buraya DAHİL edilmeyenler: `status_badge.dart`'taki durum
-/// renkleri ve talep detayındaki "Reddet"/"İptal Et" butonu gibi semantik
-/// renkler — bunlar marka kimliğiyle değil ANLAMLA bağlı, `tonalColors()`
-/// yardımcı fonksiyonuyla (bkz. status_badge.dart) hem açık hem koyu temaya
-/// zaten ayrıca uyarlanıyorlar (bkz. `Theme.of(context).brightness` kontrolü).
+/// Ekranlar kendi AppBar/Card/buton/form stilini YAZMAZ — buradaki bileşen
+/// temalarına güvenir. Durum renkleri `status_badge.dart`'ta tutulur.
 class AppTheme {
   AppTheme._();
 
-  /// Kurumsal lacivert.
-  static const Color _seedColor = Color(0xFF0B3D63);
+  /// Web paneli `blue-600` — birincil marka / CTA.
+  static const Color _seedColor = Color(0xFF2563EB);
 
-  /// Taslaktaki hedef ton — Material 3'ün otomatik koyu yüzey algoritması
-  /// yerine, istenen tam hex değerlerini tutturmak için `surface`/
-  /// `scaffoldBackgroundColor` elle bindiriliyor.
-  static const Color _darkScaffoldBackground = Color(0xFF121212);
-  static const Color _darkCardSurface = Color(0xFF1E1E1E);
+  /// Arıza Asistanı vurgusu — web `orange-500`.
+  static const Color aiAccent = Color(0xFFF97316);
 
-  static const Color _lightScaffoldBackground = Color(0xFFF4F5F7);
+  /// Web gray-900 / gray-800.
+  static const Color _darkScaffoldBackground = Color(0xFF111827);
+  static const Color _darkCardSurface = Color(0xFF1F2937);
+
+  /// Web slate-50 / white.
+  static const Color _lightScaffoldBackground = Color(0xFFF8FAFC);
   static const Color _lightCardSurface = Color(0xFFFFFFFF);
 
   static ThemeData get darkTheme => _buildTheme(Brightness.dark);
@@ -77,6 +64,9 @@ class AppTheme {
       seedColor: _seedColor,
       brightness: brightness,
     ).copyWith(
+      // Web paneliyle birebir: light blue-600, dark blue-500.
+      primary: isDark ? const Color(0xFF3B82F6) : const Color(0xFF2563EB),
+      onPrimary: Colors.white,
       surface: scaffoldBackground,
       surfaceContainerHighest: cardSurface,
       // Kenar/şerit sızıntısını azaltmak için surface türevlerini de

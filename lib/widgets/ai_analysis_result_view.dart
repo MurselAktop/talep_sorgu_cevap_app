@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/ai_assistant_service.dart';
+import '../theme/app_theme.dart';
 
 /// Arıza Talep Asistanı'nın analiz sonucunu gösteren paylaşılan görünüm.
 /// Hem bağımsız `AiAssistantScreen`'de hem `RequestCreateScreen` içine
@@ -36,7 +37,7 @@ class AiAnalysisResultView extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Icon(Icons.lightbulb_outline, color: Colors.amber),
+            const Icon(Icons.lightbulb_outline, color: AppTheme.aiAccent),
             const SizedBox(width: 8),
             Text(
               'Deneyebileceğiniz Çözümler',
@@ -50,16 +51,16 @@ class AiAnalysisResultView extends StatelessWidget {
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.orange.withValues(alpha: 0.12),
+              color: AppTheme.aiAccent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+              border: Border.all(color: AppTheme.aiAccent.withValues(alpha: 0.4)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Row(
                   children: [
-                    Icon(Icons.info_outline, color: Colors.orange, size: 20),
+                    Icon(Icons.info_outline, color: AppTheme.aiAccent, size: 20),
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(

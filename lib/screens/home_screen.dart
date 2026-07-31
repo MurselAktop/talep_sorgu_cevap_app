@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/local_prefs_service.dart';
 import '../services/supabase_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/ai_assistant_chat.dart';
 import '../widgets/app_nav_route.dart';
 import '../widgets/navigation_shell.dart';
@@ -449,7 +450,7 @@ class _HomePageState extends State<HomePage> {
       return FloatingActionButton(
         heroTag: 'aiAssistantFab',
         mini: true,
-        backgroundColor: Colors.deepOrange,
+        backgroundColor: AppTheme.aiAccent,
         onPressed: _openAiAssistant,
         tooltip: 'Arıza Asistanı',
         child: const Icon(Icons.smart_toy_outlined),
@@ -473,7 +474,7 @@ class _HomePageState extends State<HomePage> {
             top: -6,
             right: -6,
             child: Material(
-              color: Colors.deepOrange,
+              color: AppTheme.aiAccent,
               shape: const CircleBorder(),
               elevation: 3,
               child: InkWell(
