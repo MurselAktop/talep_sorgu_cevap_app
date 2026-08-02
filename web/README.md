@@ -32,6 +32,8 @@ Repo kökünde `render.yaml` Blueprint dosyası var. İki yol:
 3. `NUXT_PUBLIC_SUPABASE_URL` ve `NUXT_PUBLIC_SUPABASE_ANON_KEY` değerlerini (yerel `web/.env` ile aynı) gir
 4. Apply / Create
 
+Mevcut Blueprint varsa: Dashboard → Blueprint → **Manual Sync** / Apply (yeni `tsys-redis` Key Value oluşur).
+
 ### B) Manuel Static Site
 
 1. **New** → **Static Site** → aynı repo / `main`
@@ -56,3 +58,37 @@ Supabase Dashboard → **Authentication → URL Configuration**:
 - İstersen Site URL'yi de buna güncelle
 
 Giriş / şifre sıfırlama bu ayar olmadan bozulabilir.
+
+## Redis (Render Key Value)
+
+`render.yaml` içinde `tsys-redis` adında Redis-uyumlu **Key Value** (Valkey) tanımı var:
+
+| Alan | Değer |
+|------|--------|
+| Plan | `free` |
+| Politika | `allkeys-lru` (bellek dolunca eski anahtarlar silinir) |
+| Ağ | `ipAllowList: []` — sadece aynı Render bölgesindeki servisler (internal) |
+
+### Nasıl oluşturulur
+
+1. Bu repoyu `main`'e push et
+2. Render Dashboard → ilgili Blueprint → **Sync** / Apply  
+   veya **New → Key Value** ile manuel: isim `tsys-redis`, Free plan, external access kapalı
+3. Oluşunca **Internal Redis URL** Connect menüsünden görünür (`redis://...:6379`)
+
+### Önemli mimari not
+
+- **Static Site (`tsys-web`) Redis'e bağlanamaz** — tarayıcıda çalışan SPA'nın sunucu tarafı yok.
+- Flutter / Nuxt istemcileri Redis URL'sini **asla** görmemeli (güvenlik).
+- Redis'i kullanmak için sonraki adım: aynı Render workspace + **aynı region**'da bir Web Service (veya Background Worker) yazıp `REDIS_URL`'i `fromService` ile bağlamak; istatistik / sık okunan RPC sonuçlarını orada cache'lemek.
+
+Örnek (ileride eklenecek bir Node servisi için Blueprint parçası):
+
+```yaml
+envVars:
+  - key: REDIS_URL
+    fromService:
+      name: tsys-redis
+      type: keyvalue
+      property: connectionString
+```

@@ -1,6 +1,10 @@
-# Render Blueprint - TSYS web panel (Nuxt SPA, static)
+# Render Blueprint - TSYS
 # Dashboard: New -> Blueprint -> select this repo
-# Or manual Static Site with the same fields below.
+# Or sync existing Blueprint after pushing this file.
+#
+# Not: Static Site (tsys-web) çalışma zamanında Redis'e bağlanamaz.
+# Redis (Key Value) aynı Render workspace + bölgede bir Web Service /
+# Background Worker ile kullanılır (REDIS_URL fromService).
 
 services:
   - type: web
@@ -22,3 +26,11 @@ services:
         sync: false
       - key: NUXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
+
+  # Redis-uyumlu Valkey (Render Key Value) — performans / önbellek katmanı
+  - type: keyvalue
+    name: tsys-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    # [] = yalnızca aynı bölgedeki Render servisleri (internal URL)
+    ipAllowList: []
