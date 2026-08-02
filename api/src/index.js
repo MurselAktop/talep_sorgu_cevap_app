@@ -1,42 +1,83 @@
 import cors from 'cors'
 import express from 'express'
+import Redis from 'ioredis'
 import { createClient } from '@supabase/supabase-js'
-import { createClient as createRedisClient } from 'redis'
 
 const PORT = Number(process.env.PORT || 8787)
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || ''
-const REDIS_URL = process.env.REDIS_URL || ''
 const STATS_TTL = Number(process.env.STATS_CACHE_TTL_SECONDS || 60)
+
+/** Internal URL veya host:port (Blueprint fromService). */
+function resolveRedisUrl() {
+  const direct = (process.env.REDIS_URL || '').trim()
+  if (direct) return direct
+  const host = (process.env.REDIS_HOST || process.env.REDIS_SERVICE_NAME || '').trim()
+  if (!host) return ''
+  const port = (process.env.REDIS_PORT || '6379').trim()
+  return `redis://${host}:${port}`
+}
+
+const REDIS_URL = resolveRedisUrl()
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error('SUPABASE_URL ve SUPABASE_ANON_KEY zorunlu.')
   process.exit(1)
 }
 
-/** @type {import('redis').RedisClientType | null} */
+/** @type {import('ioredis').Redis | null} */
 let redis = null
 let redisReady = false
+/** @type {string | null} */
+let redisLastError = null
 
-async function initRedis() {
+function redisHostHint() {
+  if (!REDIS_URL) return null
+  try {
+    return new URL(REDIS_URL).host
+  } catch {
+    return '(parse-failed)'
+  }
+}
+
+function initRedis() {
   if (!REDIS_URL) {
-    console.warn('REDIS_URL yok — cache kapalı, doğrudan Supabase kullanılacak.')
+    redisLastError = 'REDIS_URL env yok — Dashboard > tsys-api > Environment kontrol et'
+    console.warn(redisLastError)
     return
   }
-  try {
-    redis = createRedisClient({ url: REDIS_URL })
-    redis.on('error', (err) => {
-      console.error('Redis error:', err.message)
-      redisReady = false
-    })
-    await redis.connect()
+
+  // Render Key Value: internal redis://red-xxx:6379
+  // ioredis, Render dokümantasyonunun önerdiği istemci.
+  redis = new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 2,
+    enableReadyCheck: true,
+    // Render private network / DNS için
+    family: 0,
+    connectTimeout: 15_000,
+    lazyConnect: false,
+    retryStrategy(times) {
+      if (times > 8) return null
+      return Math.min(times * 200, 2000)
+    },
+  })
+
+  redis.on('ready', () => {
     redisReady = true
-    console.log('Redis bağlandı.')
-  } catch (err) {
-    console.error('Redis bağlanamadı, cache kapalı:', err.message)
-    redis = null
+    redisLastError = null
+    console.log('Redis hazır:', redisHostHint())
+  })
+
+  redis.on('error', (err) => {
     redisReady = false
-  }
+    redisLastError = err.message
+    console.error('Redis error:', err.message)
+  })
+
+  redis.on('end', () => {
+    redisReady = false
+    console.warn('Redis bağlantısı kapandı.')
+  })
 }
 
 function supabaseAsUser(accessToken) {
@@ -90,7 +131,8 @@ async function cacheGet(key) {
   try {
     const raw = await redis.get(key)
     return raw ? JSON.parse(raw) : null
-  } catch {
+  } catch (err) {
+    redisLastError = err.message
     return null
   }
 }
@@ -98,8 +140,9 @@ async function cacheGet(key) {
 async function cacheSet(key, value, ttlSec) {
   if (!redisReady || !redis) return
   try {
-    await redis.set(key, JSON.stringify(value), { EX: ttlSec })
+    await redis.set(key, JSON.stringify(value), 'EX', ttlSec)
   } catch (err) {
+    redisLastError = err.message
     console.error('Redis set hata:', err.message)
   }
 }
@@ -108,18 +151,33 @@ const app = express()
 app.use(cors({ origin: true }))
 app.use(express.json({ limit: '256kb' }))
 
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  // Hazır değilse tek seferlik PING dene (soğuk başlangıç)
+  if (redis && !redisReady) {
+    try {
+      const pong = await redis.ping()
+      if (pong === 'PONG') {
+        redisReady = true
+        redisLastError = null
+      }
+    } catch (err) {
+      redisLastError = err.message
+    }
+  }
+
   res.json({
     ok: true,
-    redis: redisReady,
     service: 'tsys-api',
+    redis: redisReady,
+    redisConfigured: Boolean(REDIS_URL),
+    redisHost: redisHostHint(),
+    redisError: redisReady ? null : redisLastError,
   })
 })
 
 /**
  * GET /api/stats
  * Admin veya müdür JWT ile istatistik paketini döner (cache-aside).
- * Body: { rows, trendRows, personnelRatings, cached }
  */
 app.get('/api/stats', async (req, res) => {
   try {
@@ -172,7 +230,6 @@ app.get('/api/stats', async (req, res) => {
 
 /**
  * GET /api/departments/active
- * Aktif birim listesi (kısa TTL cache) — giriş yapmış herkes.
  */
 app.get('/api/departments/active', async (req, res) => {
   try {
@@ -204,7 +261,9 @@ app.get('/api/departments/active', async (req, res) => {
   }
 })
 
-await initRedis()
+initRedis()
 app.listen(PORT, () => {
-  console.log(`tsys-api dinleniyor :${PORT} (redis=${redisReady})`)
+  console.log(
+    `tsys-api dinleniyor :${PORT} redisConfigured=${Boolean(REDIS_URL)} host=${redisHostHint()}`,
+  )
 })

@@ -51,6 +51,16 @@ services:
           name: tsys-redis
           type: keyvalue
           property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          name: tsys-redis
+          type: keyvalue
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          name: tsys-redis
+          type: keyvalue
+          property: port
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
