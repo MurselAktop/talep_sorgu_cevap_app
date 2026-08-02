@@ -31,6 +31,7 @@ export default defineNuxtConfig({
     public: {
       supabaseUrl: process.env.NUXT_PUBLIC_SUPABASE_URL || '',
       supabaseAnonKey: process.env.NUXT_PUBLIC_SUPABASE_ANON_KEY || '',
+      cacheApiUrl: process.env.NUXT_PUBLIC_CACHE_API_URL || '',
     },
   },
 })

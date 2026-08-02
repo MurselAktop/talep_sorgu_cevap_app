@@ -2,9 +2,9 @@
 # Dashboard: New -> Blueprint -> select this repo
 # Or sync existing Blueprint after pushing this file.
 #
-# Not: Static Site (tsys-web) çalışma zamanında Redis'e bağlanamaz.
-# Redis (Key Value) aynı Render workspace + bölgede bir Web Service /
-# Background Worker ile kullanılır (REDIS_URL fromService).
+# tsys-web  = Nuxt Static Site (istemci; Redis yok)
+# tsys-redis = Key Value (internal)
+# tsys-api  = Node cache API (Redis + Supabase JWT)
 
 services:
   - type: web
@@ -17,7 +17,6 @@ services:
       paths:
         - web/**
     routes:
-      # SPA fallback for dynamic client routes
       - type: rewrite
         source: /*
         destination: /index.html
@@ -26,11 +25,35 @@ services:
         sync: false
       - key: NUXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
+      - key: NUXT_PUBLIC_CACHE_API_URL
+        sync: false
 
-  # Redis-uyumlu Valkey (Render Key Value) — performans / önbellek katmanı
   - type: keyvalue
     name: tsys-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
-    # [] = yalnızca aynı bölgedeki Render servisleri (internal URL)
     ipAllowList: []
+
+  - type: web
+    name: tsys-api
+    runtime: node
+    plan: free
+    rootDir: api
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - api/**
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          name: tsys-redis
+          type: keyvalue
+          property: connectionString
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: STATS_CACHE_TTL_SECONDS
+        value: "60"

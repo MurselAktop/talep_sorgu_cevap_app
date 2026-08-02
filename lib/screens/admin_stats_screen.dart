@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../services/supabase_service.dart';
+import '../services/stats_cache_service.dart';
 import '../widgets/app_nav_route.dart';
 import '../widgets/navigation_shell.dart';
 import '../widgets/request_filters.dart';
@@ -22,8 +22,6 @@ class AdminStatsScreen extends StatefulWidget {
 }
 
 class _AdminStatsScreenState extends State<AdminStatsScreen> {
-  static SupabaseClient get _client => SupabaseService.client;
-
   List<Map<String, dynamic>> _rows = [];
   List<Map<String, dynamic>> _trendRows = [];
   List<Map<String, dynamic>> _personnelRatings = [];
@@ -42,16 +40,12 @@ class _AdminStatsScreenState extends State<AdminStatsScreen> {
       _errorText = null;
     });
     try {
-      final results = await Future.wait([
-        _client.rpc('get_admin_stats'),
-        _client.rpc('get_admin_resolution_trend'),
-        _client.rpc('get_personnel_ratings'),
-      ]);
+      final pack = await StatsCacheService.loadDashboardStats(isAdmin: true);
       if (!mounted) return;
       setState(() {
-        _rows = List<Map<String, dynamic>>.from(results[0] as List);
-        _trendRows = List<Map<String, dynamic>>.from(results[1] as List);
-        _personnelRatings = List<Map<String, dynamic>>.from(results[2] as List);
+        _rows = List<Map<String, dynamic>>.from(pack['rows'] as List);
+        _trendRows = List<Map<String, dynamic>>.from(pack['trendRows'] as List);
+        _personnelRatings = List<Map<String, dynamic>>.from(pack['personnelRatings'] as List);
       });
     } on PostgrestException catch (e) {
       if (!mounted) return;

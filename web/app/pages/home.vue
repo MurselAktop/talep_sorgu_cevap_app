@@ -143,16 +143,14 @@ async function load() {
     if (isMudur.value) void supabase.rpc('check_sla_breaches')
 
     if (isAdmin.value || isMudur.value) {
-      const rpc = isAdmin.value ? 'get_admin_stats' : 'get_manager_stats'
-      const trendRpc = isAdmin.value ? 'get_admin_resolution_trend' : 'get_manager_resolution_trend'
-      const [statsRes, trendRes, ratingsRes] = await Promise.all([
-        supabase.rpc(rpc),
-        supabase.rpc(trendRpc),
-        supabase.rpc('get_personnel_ratings'),
-      ])
-      statsRows.value = Array.isArray(statsRes.data) ? statsRes.data : []
-      trendRows.value = Array.isArray(trendRes.data) ? trendRes.data : []
-      personnelRatings.value = Array.isArray(ratingsRes.data) ? ratingsRes.data : []
+      const { data: sessionData } = await supabase.auth.getSession()
+      const pack = await fetchDashboardStats({
+        isAdmin: isAdmin.value,
+        accessToken: sessionData.session?.access_token || '',
+      })
+      statsRows.value = pack.rows
+      trendRows.value = pack.trendRows
+      personnelRatings.value = pack.personnelRatings
 
       const last = trendRows.value[trendRows.value.length - 1]
       const hours = Number(last?.avg_resolution_hours ?? last?.avg_hours ?? NaN)

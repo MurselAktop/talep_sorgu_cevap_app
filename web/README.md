@@ -18,6 +18,7 @@ Tarayıcı: http://localhost:3000
 
 - `NUXT_PUBLIC_SUPABASE_URL`
 - `NUXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NUXT_PUBLIC_CACHE_API_URL` (opsiyonel — Render `tsys-api` adresi; boşsa doğrudan Supabase)
 
 `service_role` anahtarı **asla** buraya konmaz.
 
@@ -76,19 +77,19 @@ Giriş / şifre sıfırlama bu ayar olmadan bozulabilir.
    veya **New → Key Value** ile manuel: isim `tsys-redis`, Free plan, external access kapalı
 3. Oluşunca **Internal Redis URL** Connect menüsünden görünür (`redis://...:6379`)
 
+### Cache API (`tsys-api`)
+
+Blueprint’te Node Web Service tanımlı (`api/`). Redis’e yalnızca bu servis bağlanır.
+
+1. Blueprint Sync sonrası Dashboard’da **tsys-api** oluşur
+2. Env doldur: `SUPABASE_URL`, `SUPABASE_ANON_KEY` (anon key; service_role değil)
+3. Deploy URL’ini kopyala → web `.env`: `NUXT_PUBLIC_CACHE_API_URL=https://tsys-api-....onrender.com`
+4. Flutter `.env`: `CACHE_API_URL=https://tsys-api-....onrender.com`
+
+Health: `GET https://tsys-api-....onrender.com/health` → `{ ok, redis: true }`
+
 ### Önemli mimari not
 
-- **Static Site (`tsys-web`) Redis'e bağlanamaz** — tarayıcıda çalışan SPA'nın sunucu tarafı yok.
-- Flutter / Nuxt istemcileri Redis URL'sini **asla** görmemeli (güvenlik).
-- Redis'i kullanmak için sonraki adım: aynı Render workspace + **aynı region**'da bir Web Service (veya Background Worker) yazıp `REDIS_URL`'i `fromService` ile bağlamak; istatistik / sık okunan RPC sonuçlarını orada cache'lemek.
-
-Örnek (ileride eklenecek bir Node servisi için Blueprint parçası):
-
-```yaml
-envVars:
-  - key: REDIS_URL
-    fromService:
-      name: tsys-redis
-      type: keyvalue
-      property: connectionString
-```
+- **Static Site Redis'e bağlanamaz** — cache yalnızca `tsys-api` üzerinden.
+- Flutter / Nuxt Redis URL’sini **asla** görmez; sadece public cache API adresini bilir.
+- İsteklerde kullanıcı JWT’si gönderilir; Supabase RLS aynen uygulanır.

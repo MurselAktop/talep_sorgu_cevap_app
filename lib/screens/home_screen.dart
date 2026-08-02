@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/local_prefs_service.dart';
+import '../services/stats_cache_service.dart';
 import '../services/supabase_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ai_assistant_chat.dart';
@@ -175,9 +176,9 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadMiniStats(String role) async {
     setState(() => _isLoadingMiniStats = true);
     try {
-      final rows = await _client.rpc(role == 'admin' ? 'get_admin_stats' : 'get_manager_stats');
+      final rows = await StatsCacheService.loadStatsRows(isAdmin: role == 'admin');
       final totals = <String, int>{};
-      for (final row in (rows as List)) {
+      for (final row in rows) {
         final status = row['status'] as String;
         totals[status] = (totals[status] ?? 0) + (row['request_count'] as int);
       }

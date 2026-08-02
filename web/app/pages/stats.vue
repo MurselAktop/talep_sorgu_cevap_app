@@ -17,17 +17,16 @@ function countOf(row: any) {
 
 onMounted(async () => {
   try {
-    const statsRpc = isAdmin.value ? 'get_admin_stats' : 'get_manager_stats'
-    const trendRpc = isAdmin.value ? 'get_admin_resolution_trend' : 'get_manager_resolution_trend'
-    const results = await Promise.all([
-      supabase.rpc(statsRpc),
-      supabase.rpc(trendRpc),
-      supabase.rpc('get_personnel_ratings'),
-    ])
-    rows.value = Array.isArray(results[0].data) ? results[0].data : []
-    trendRows.value = Array.isArray(results[1].data) ? results[1].data : []
-    personnelRatings.value = Array.isArray(results[2].data) ? results[2].data : []
-    if (results[0].error) error.value = results[0].error.message
+    const { data: sessionData } = await supabase.auth.getSession()
+    const token = sessionData.session?.access_token || ''
+    const pack = await fetchDashboardStats({
+      isAdmin: isAdmin.value,
+      accessToken: token,
+    })
+    rows.value = pack.rows
+    trendRows.value = pack.trendRows
+    personnelRatings.value = pack.personnelRatings
+    if (pack.error) error.value = pack.error
   } catch (e: any) {
     error.value = e?.message || 'İstatistikler yüklenemedi.'
   } finally {
