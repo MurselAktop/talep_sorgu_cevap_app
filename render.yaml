@@ -12,7 +12,8 @@ services:
     runtime: static
     rootDir: web
     buildCommand: npm ci && npm run generate
-    staticPublishPath: ./web/.output/public
+    # rootDir=web iken yol Root Directory'ye göredir (web/web/... olmasın)
+    staticPublishPath: .output/public
     buildFilter:
       paths:
         - web/**

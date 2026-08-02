@@ -49,7 +49,8 @@ Mevcut Blueprint varsa: Dashboard → Blueprint → **Manual Sync** / Apply (yen
 3. Environment'a aynı iki `NUXT_PUBLIC_*` değişkenini ekle
 4. **Redirects/Rewrites** → Rewrite: Source `/*` → Destination `/index.html`
 
-> Not: Dashboard'da Publish Directory genelde Root Directory'ye göredir (`.output/public`). Blueprint'te path repo köküne göredir (`./web/.output/public`).
+> Not: Root Directory `web` iken Publish Directory her zaman `.output/public` olmalı.
+> `./web/.output/public` yazarsan Render `web/web/.output/public` arar ve build fail olur.
 
 ### Deploy sonrası (zorunlu)
 
