@@ -159,6 +159,7 @@ class _RequestCreateScreenState extends State<RequestCreateScreen> {
 
       if (!mounted) return;
 
+
       if (requesterType == 'anonim') {
         // Anonim kullanıcı için erişim kodu talebi tekrar bulabilmesinin tek
         // yolu — dialog kullanıcı kapatana kadar ekranda kalmalı, otomatik
